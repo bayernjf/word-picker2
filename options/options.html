@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WordCatcher 设置</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      body {
+        margin: 0;
+        background: #0d1117;
+        color: #c9d1d9;
+      }
+
+      main {
+        max-width: 760px;
+        margin: 0 auto;
+        padding: 32px 20px 48px;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+      }
+
+      p {
+        color: #8b949e;
+      }
+
+      form {
+        display: grid;
+        gap: 18px;
+        margin-top: 24px;
+      }
+
+      .field {
+        display: grid;
+        gap: 8px;
+      }
+
+      label {
+        font-weight: 600;
+      }
+
+      input,
+      select {
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        background: #161b22;
+        color: #c9d1d9;
+        padding: 10px 12px;
+        font-size: 14px;
+      }
+
+      .checkbox {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .checkbox input {
+        width: 18px;
+        height: 18px;
+      }
+
+      button {
+        width: fit-content;
+        border: none;
+        border-radius: 8px;
+        background: #238636;
+        color: #fff;
+        padding: 10px 16px;
+        font-size: 14px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      #status {
+        min-height: 20px;
+        margin-top: 16px;
+        color: #58a6ff;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>WordCatcher 设置</h1>
+      <p>自定义查词快捷键、悬停时间和免费翻译接口配置。</p>
+
+      <form id="settings-form">
+        <div class="field">
+          <label for="lookupKey">查词按键</label>
+          <select id="lookupKey" name="lookupKey">
+            <option value="Control">Control</option>
+            <option value="Alt">Alt</option>
+            <option value="Shift">Shift</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="hoverDelay">悬停触发延迟（毫秒）</label>
+          <input id="hoverDelay" name="hoverDelay" type="number" min="100" max="1500" step="50" />
+        </div>
+
+        <div class="field">
+          <label for="translator">翻译源</label>
+          <select id="translator" name="translator">
+            <option value="free">免费公开接口</option>
+            <option value="fallback">本地兜底模式</option>
+          </select>
+        </div>
+
+        <div class="field checkbox">
+          <input id="autoSpeak" name="autoSpeak" type="checkbox" />
+          <label for="autoSpeak">查词后自动朗读</label>
+        </div>
+
+        <div class="field">
+          <label for="maxCacheSize">缓存条数上限</label>
+          <input id="maxCacheSize" name="maxCacheSize" type="number" min="50" max="500" step="10" />
+        </div>
+
+        <button type="submit">保存设置</button>
+      </form>
+
+      <div id="status" aria-live="polite"></div>
+    </main>
+
+    <script type="module" src="./options.js"></script>
+  </body>
+</html>

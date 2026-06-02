@@ -1,0 +1,74 @@
+.popup-container {
+  position: fixed;
+  width: 320px;
+  box-sizing: border-box;
+  background: #1e1e2e;
+  border: 1px solid #45475a;
+  border-radius: 10px;
+  padding: 14px;
+  color: #cdd6f4;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  z-index: 2147483647;
+}
+
+.popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.popup-word {
+  font-size: 18px;
+  font-weight: 700;
+  color: #f5f7ff;
+  word-break: break-word;
+}
+
+.popup-close {
+  background: transparent;
+  border: none;
+  color: #a6adc8;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.popup-phonetic {
+  font-size: 13px;
+  color: #8b949e;
+  margin-top: 4px;
+}
+
+.popup-meaning {
+  margin-top: 8px;
+}
+
+.popup-example {
+  margin-top: 10px;
+  padding-left: 10px;
+  border-left: 2px solid #45475a;
+  color: #a6adc8;
+  font-size: 13px;
+  font-style: italic;
+}
+
+.popup-actions {
+  margin-top: 12px;
+}
+
+.btn-save {
+  width: 100%;
+  border: none;
+  border-radius: 8px;
+  padding: 9px 12px;
+  background: #89b4fa;
+  color: #11213e;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
