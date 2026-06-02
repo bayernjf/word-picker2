@@ -30,6 +30,7 @@
   let latestRequestToken = 0;
   let lookupKeyPressed = false;
   let isUpdatingPopup = false;
+  let pendingPopupFocus = false;
 
   initialize();
 
@@ -160,6 +161,11 @@
       requestAnimationFrame(() => {
         if (popupContainer?.isConnected) {
           positionPopup(popupContainer, activeAnchor.x, activeAnchor.y);
+          if (currentState === STATE.LOADING) {
+            pendingPopupFocus = true;
+            return;
+          }
+          pendingPopupFocus = false;
           focusPopup();
         }
       });
@@ -177,6 +183,7 @@
     clearHoverTimer();
     latestRequestToken += 1;
     lookupKeyPressed = false;
+    pendingPopupFocus = false;
     hidePopup();
     currentLookup = null;
     currentState = STATE.IDLE;
@@ -283,6 +290,11 @@
         });
         currentState = STATE.SHOWING;
 
+        if (pendingPopupFocus && isPopupPinned()) {
+          pendingPopupFocus = false;
+          focusPopup();
+        }
+
         if (settings.autoSpeak) {
           speakWord(translation.word || detection.word);
         }
@@ -301,6 +313,11 @@
           error: true
         });
         currentState = STATE.SHOWING;
+
+        if (pendingPopupFocus && isPopupPinned()) {
+          pendingPopupFocus = false;
+          focusPopup();
+        }
       }
     }, Number(settings.hoverDelay) || 300);
   }
