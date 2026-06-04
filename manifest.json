@@ -10,7 +10,8 @@
     "128": "assets/icons/icon128.png"
   },
   "permissions": [
-    "storage"
+    "storage",
+    "alarms"
   ],
   "host_permissions": [
     "https://api.dictionaryapi.dev/*",

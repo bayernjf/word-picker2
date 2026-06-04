@@ -2,11 +2,21 @@ const form = document.getElementById("settings-form");
 const statusNode = document.getElementById("status");
 const syncStatusNode = document.getElementById("sync-status");
 const syncNowButton = document.getElementById("sync-now");
+const authLoginButton = document.getElementById("auth-login");
+const authRegisterButton = document.getElementById("auth-register");
+const authLogoutButton = document.getElementById("auth-logout");
+const authLoggedOut = document.getElementById("auth-logged-out");
+const authLoggedIn = document.getElementById("auth-logged-in");
+const authUserInfo = document.getElementById("auth-user-info");
 
 document.addEventListener("DOMContentLoaded", async () => {
   await loadSettings();
   form.addEventListener("submit", handleSubmit);
   syncNowButton?.addEventListener("click", handleSyncNow);
+  authLoginButton?.addEventListener("click", handleAuthLogin);
+  authRegisterButton?.addEventListener("click", handleAuthRegister);
+  authLogoutButton?.addEventListener("click", handleAuthLogout);
+  await refreshAuthStatus();
   await refreshSyncStatus();
 });
 
@@ -20,10 +30,86 @@ async function loadSettings() {
     form.autoSpeak.checked = Boolean(settings.autoSpeak);
     form.maxCacheSize.value = settings.maxCacheSize || 200;
     form.syncEnabled.checked = settings.syncEnabled !== false;
-    form.syncBaseUrl.value = settings.syncBaseUrl || "http://localhost:3001";
-    form.pairingCode.value = settings.pairingCode || "";
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "加载设置失败");
+  }
+}
+
+async function refreshAuthStatus() {
+  try {
+    const response = await sendMessage({ type: "AUTH_STATUS" });
+    if (response.isLoggedIn && response.user) {
+      authLoggedOut.style.display = "none";
+      authLoggedIn.style.display = "block";
+      authUserInfo.textContent = `邮箱: ${response.user.email || "-"}`;
+    } else {
+      authLoggedOut.style.display = "block";
+      authLoggedIn.style.display = "none";
+    }
+  } catch {
+    authLoggedOut.style.display = "block";
+    authLoggedIn.style.display = "none";
+  }
+}
+
+async function handleAuthLogin() {
+  const email = String(form.authEmail.value || "").trim().toLowerCase();
+  const password = String(form.authPassword.value || "");
+  const baseUrl = "http://localhost:3001";
+  if (!email || !password) {
+    setStatus("请填写邮箱和密码");
+    return;
+  }
+  try {
+    setStatus("正在登录...");
+    const response = await sendMessage({ type: "AUTH_LOGIN", email, password, baseUrl });
+    if (response.ok) {
+      setStatus("登录成功，开始同步...");
+      await refreshAuthStatus();
+      await refreshSyncStatus();
+    } else {
+      setStatus(`登录失败: ${response.error || "unknown"}`);
+    }
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "登录失败");
+  }
+}
+
+async function handleAuthRegister() {
+  const email = String(form.authEmail.value || "").trim().toLowerCase();
+  const password = String(form.authPassword.value || "");
+  const baseUrl = "http://localhost:3001";
+  if (!email || !password) {
+    setStatus("请填写邮箱和密码");
+    return;
+  }
+  if (password.length < 6) {
+    setStatus("密码至少需要6个字符");
+    return;
+  }
+  try {
+    setStatus("正在注册...");
+    const response = await sendMessage({ type: "AUTH_REGISTER", email, password, baseUrl });
+    if (response.ok) {
+      setStatus("注册成功，开始同步...");
+      await refreshAuthStatus();
+      await refreshSyncStatus();
+    } else {
+      setStatus(`注册失败: ${response.error || "unknown"}`);
+    }
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "注册失败");
+  }
+}
+
+async function handleAuthLogout() {
+  try {
+    await sendMessage({ type: "AUTH_LOGOUT" });
+    setStatus("已退出登录");
+    await refreshAuthStatus();
+    await refreshSyncStatus();
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "退出失败");
   }
 }
 
@@ -37,8 +123,7 @@ async function handleSubmit(event) {
     autoSpeak: form.autoSpeak.checked,
     maxCacheSize: clampNumber(form.maxCacheSize.value, 50, 500, 200),
     syncEnabled: form.syncEnabled.checked,
-    syncBaseUrl: String(form.syncBaseUrl.value || "").trim() || "http://localhost:3001",
-    pairingCode: String(form.pairingCode.value || "").trim().toUpperCase()
+    syncBaseUrl: String(form.syncBaseUrl.value || "").trim() || "http://localhost:3001"
   };
 
   try {
@@ -76,10 +161,15 @@ async function refreshSyncStatus() {
     const response = await sendMessage({ type: "GET_SYNC_STATUS" });
     const deviceId = response.deviceId || "-";
     const queueSize = Number.isFinite(response.queueSize) ? response.queueSize : 0;
-    const hasToken = Boolean(response.hasToken);
-    const hasPairingCode = Boolean(response.hasPairingCode);
+    const isLoggedIn = Boolean(response.isLoggedIn);
+    const userEmail = response.user?.email || "-";
+    const lastSyncAt = response.lastSyncAt ? new Date(response.lastSyncAt).toLocaleString() : "从未同步";
     if (syncStatusNode) {
-      syncStatusNode.textContent = `设备：${deviceId} ｜ 同步队列：${queueSize} 条 ｜ 已绑定：${hasToken ? "是" : "否"} ｜ 已填写配对码：${hasPairingCode ? "是" : "否"}`;
+      if (isLoggedIn) {
+        syncStatusNode.textContent = `已登录：${userEmail} ｜ 同步队列：${queueSize} 条 ｜ 最后同步：${lastSyncAt}`;
+      } else {
+        syncStatusNode.textContent = `请先登录账号以启用同步 ｜ 同步队列：${queueSize} 条 ｜ 设备：${deviceId}`;
+      }
     }
   } catch {
     if (syncStatusNode) {
