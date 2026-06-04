@@ -8,7 +8,7 @@
 
   const DEFAULT_SETTINGS = {
     lookupKey: "Control",
-    hoverDelay: 300,
+    hoverDelay: 100,
     autoSpeak: false
   };
 
@@ -22,14 +22,22 @@
   let currentState = STATE.IDLE;
   let settings = { ...DEFAULT_SETTINGS };
   let hoverTimer = null;
+  let keydownPopupTimer = null;
   let popupHost = null;
   let popupShadow = null;
   let popupContainer = null;
+  let toastHost = null;
+  let toastShadow = null;
+  let toastTimer = null;
+  let toastNode = null;
   let activeAnchor = { x: 0, y: 0 };
   let currentLookup = null;
   let latestRequestToken = 0;
   let lookupKeyPressed = false;
   let isUpdatingPopup = false;
+  let pendingPopupFocus = false;
+
+  const KEYDOWN_POPUP_DELAY_MS = 100;
 
   initialize();
 
@@ -110,6 +118,7 @@
       if (currentState === STATE.IDLE) {
         enterPenMode();
       }
+      scheduleInitialLookupAfterKeydown();
     }
   }
 
@@ -153,6 +162,7 @@
 
   function leavePenMode({ preservePopup = false } = {}) {
     clearHoverTimer();
+    clearKeydownPopupTimer();
     removeCursor();
     if (preservePopup && popupContainer?.isConnected) {
       currentState = currentState === STATE.LOADING ? STATE.LOADING : STATE.SHOWING;
@@ -160,6 +170,11 @@
       requestAnimationFrame(() => {
         if (popupContainer?.isConnected) {
           positionPopup(popupContainer, activeAnchor.x, activeAnchor.y);
+          if (currentState === STATE.LOADING) {
+            pendingPopupFocus = true;
+            return;
+          }
+          pendingPopupFocus = false;
           focusPopup();
         }
       });
@@ -175,12 +190,38 @@
 
   function closePopupAndReset() {
     clearHoverTimer();
+    clearKeydownPopupTimer();
     latestRequestToken += 1;
     lookupKeyPressed = false;
+    pendingPopupFocus = false;
     hidePopup();
     currentLookup = null;
     currentState = STATE.IDLE;
     removeCursor();
+  }
+
+  function scheduleInitialLookupAfterKeydown() {
+    clearKeydownPopupTimer();
+    keydownPopupTimer = window.setTimeout(() => {
+      keydownPopupTimer = null;
+      if (!lookupKeyPressed) {
+        return;
+      }
+      if (popupContainer?.isConnected) {
+        return;
+      }
+      if (currentState !== STATE.PEN && currentState !== STATE.IDLE) {
+        return;
+      }
+      void lookupAtPoint(activeAnchor.x, activeAnchor.y);
+    }, KEYDOWN_POPUP_DELAY_MS);
+  }
+
+  function clearKeydownPopupTimer() {
+    if (keydownPopupTimer) {
+      clearTimeout(keydownPopupTimer);
+      keydownPopupTimer = null;
+    }
   }
 
   function isPopupPinned() {
@@ -228,6 +269,8 @@
   }
 
   function handleMouseMove(event) {
+    activeAnchor = { x: event.clientX, y: event.clientY };
+
     if (!lookupKeyPressed) {
       return;
     }
@@ -236,73 +279,87 @@
       return;
     }
 
-    activeAnchor = { x: event.clientX, y: event.clientY };
     clearHoverTimer();
 
-    hoverTimer = window.setTimeout(async () => {
-      const detection = detectWordAtPoint(event.clientX, event.clientY);
-      if (!detection) {
-        if (lookupKeyPressed && currentState !== STATE.LOADING) {
-          hidePopup();
-          currentState = STATE.PEN;
-          currentLookup = null;
-        }
+    const delay = Math.max(0, Number(settings.hoverDelay) || DEFAULT_SETTINGS.hoverDelay);
+    hoverTimer = window.setTimeout(() => {
+      void lookupAtPoint(event.clientX, event.clientY);
+    }, delay);
+  }
+
+  async function lookupAtPoint(x, y) {
+    const detection = detectWordAtPoint(x, y);
+    if (!detection) {
+      if (lookupKeyPressed && currentState !== STATE.LOADING) {
+        hidePopup();
+        currentState = STATE.PEN;
+        currentLookup = null;
+      }
+      return;
+    }
+
+    const signature = `${detection.word.toLowerCase()}|${detection.start}|${detection.end}|${detection.text}`;
+    if (currentLookup?.signature === signature && (currentState === STATE.LOADING || currentState === STATE.SHOWING)) {
+      positionPopup(popupContainer, x, y);
+      return;
+    }
+
+    currentLookup = {
+      ...detection,
+      signature
+    };
+    currentState = STATE.LOADING;
+    showPopup(x, y, buildLoadingData(detection.word));
+
+    const requestToken = ++latestRequestToken;
+
+    try {
+      const response = await sendMessage({
+        type: "TRANSLATE",
+        word: detection.word
+      });
+
+      if (requestToken !== latestRequestToken || currentLookup?.signature !== signature) {
         return;
       }
 
-      const signature = `${detection.word.toLowerCase()}|${detection.start}|${detection.end}|${detection.text}`;
-      if (currentLookup?.signature === signature && (currentState === STATE.LOADING || currentState === STATE.SHOWING)) {
-        positionPopup(popupContainer, event.clientX, event.clientY);
+      const translation = response.translation || buildLoadingData(detection.word);
+      currentLookup.translation = translation;
+      updatePopup({
+        ...translation,
+        sentence: extractSentenceFromDetection(detection)
+      });
+      currentState = STATE.SHOWING;
+
+      if (pendingPopupFocus && isPopupPinned()) {
+        pendingPopupFocus = false;
+        focusPopup();
+      }
+
+      if (settings.autoSpeak) {
+        speakWord(translation.word || detection.word);
+      }
+    } catch (error) {
+      if (requestToken !== latestRequestToken || currentLookup?.signature !== signature) {
         return;
       }
 
-      currentLookup = {
-        ...detection,
-        signature
-      };
-      currentState = STATE.LOADING;
-      showPopup(event.clientX, event.clientY, buildLoadingData(detection.word));
+      updatePopup({
+        word: detection.word,
+        phonetic: "",
+        meaning: error instanceof Error ? error.message : "翻译失败，请稍后再试",
+        exampleEn: "",
+        exampleZh: "",
+        sentence: extractSentenceFromDetection(detection),
+        error: true
+      });
+      currentState = STATE.SHOWING;
 
-      const requestToken = ++latestRequestToken;
-
-      try {
-        const response = await sendMessage({
-          type: "TRANSLATE",
-          word: detection.word
-        });
-
-        if (requestToken !== latestRequestToken || currentLookup?.signature !== signature) {
-          return;
-        }
-
-        const translation = response.translation || buildLoadingData(detection.word);
-        currentLookup.translation = translation;
-        updatePopup({
-          ...translation,
-          sentence: extractSentenceFromDetection(detection)
-        });
-        currentState = STATE.SHOWING;
-
-        if (settings.autoSpeak) {
-          speakWord(translation.word || detection.word);
-        }
-      } catch (error) {
-        if (requestToken !== latestRequestToken || currentLookup?.signature !== signature) {
-          return;
-        }
-
-        updatePopup({
-          word: detection.word,
-          phonetic: "",
-          meaning: error instanceof Error ? error.message : "翻译失败，请稍后再试",
-          exampleEn: "",
-          exampleZh: "",
-          sentence: extractSentenceFromDetection(detection),
-          error: true
-        });
-        currentState = STATE.SHOWING;
+      if (pendingPopupFocus && isPopupPinned()) {
+        pendingPopupFocus = false;
+        focusPopup();
       }
-    }, Number(settings.hoverDelay) || 300);
+    }
   }
 
   function detectWordAtPoint(x, y) {
@@ -562,20 +619,30 @@
         return;
       }
 
+      let response;
       try {
-        const response = await sendMessage({
+        response = await sendMessage({
           type: "SAVE_WORD",
           entry: buildWordEntry(currentLookup)
         });
-        if (response.success && !response.duplicate) {
-          closePopupAndReset();
-          return;
-        }
-
-        showSaveFeedback(response.duplicate ? "单词已存在" : "已添加到单词本");
       } catch (error) {
-        showSaveFeedback(error instanceof Error ? error.message : "保存失败");
+        showToast(error instanceof Error ? error.message : "保存失败");
+        return;
       }
+
+      if (response.saved && !response.duplicate) {
+        showToast("添加成功");
+        safeClosePopupAndReset();
+        return;
+      }
+
+      if (response.duplicate) {
+        showToast("已添加");
+        safeClosePopupAndReset();
+        return;
+      }
+
+      showToast("保存失败");
     });
 
     return container;
@@ -615,6 +682,57 @@
     removeAllPopupContainers();
   }
 
+  function ensureToastHost() {
+    if (toastHost && toastShadow) {
+      return;
+    }
+
+    toastHost = document.createElement("div");
+    toastHost.id = "word-catcher-toast-host";
+    toastHost.style.position = "fixed";
+    toastHost.style.left = "0";
+    toastHost.style.top = "0";
+    toastHost.style.zIndex = "2147483647";
+    document.documentElement.appendChild(toastHost);
+    toastShadow = toastHost.attachShadow({ mode: "open" });
+
+    const style = document.createElement("style");
+    style.textContent = TOAST_CSS;
+    toastShadow.appendChild(style);
+  }
+
+  function showToast(message) {
+    ensureToastHost();
+
+    if (!toastShadow) {
+      return;
+    }
+
+    if (toastTimer) {
+      clearTimeout(toastTimer);
+      toastTimer = null;
+    }
+
+    if (toastNode) {
+      toastNode.remove();
+      toastNode = null;
+    }
+
+    const node = document.createElement("div");
+    node.className = "toast";
+    node.textContent = message;
+    toastNode = node;
+    toastShadow.appendChild(node);
+
+    toastTimer = window.setTimeout(() => {
+      if (toastNode === node) {
+        node.remove();
+        toastNode = null;
+      }
+      toastTimer = null;
+    }, 1400);
+  }
+
   function buildWordEntry(lookup) {
     const sentence = extractSentenceFromDetection(lookup);
     return {
@@ -650,35 +768,37 @@
       return;
     }
 
+    let response;
     try {
-      const response = await saveLookupWord(lookup);
-      if (response.success && !response.duplicate) {
-        closePopupAndReset();
-        return;
-      }
-      showSaveFeedback(response.duplicate ? "单词已存在" : "已添加到单词本");
-      // 重复或保存成功不关闭，让用户看到反馈
+      response = await saveLookupWord(lookup);
     } catch (error) {
-      showSaveFeedback(error instanceof Error ? error.message : "保存失败");
-    }
-  }
-
-  function showSaveFeedback(message) {
-    const button = popupContainer?.querySelector(".btn-save");
-    if (!button) {
+      showToast(error instanceof Error ? error.message : "保存失败");
       return;
     }
 
-    const original = button.textContent;
-    button.textContent = message;
-    button.disabled = true;
+    if (response.saved && !response.duplicate) {
+      showToast("添加成功");
+      safeClosePopupAndReset();
+      return;
+    }
+
+    if (response.duplicate) {
+      showToast("已添加");
+      safeClosePopupAndReset();
+      return;
+    }
+
+    showToast("保存失败");
+  }
+
+  function safeClosePopupAndReset() {
     window.setTimeout(() => {
-      if (!button.isConnected) {
-        return;
+      try {
+        closePopupAndReset();
+      } catch (_error) {
+        // ignore
       }
-      button.textContent = original;
-      button.disabled = false;
-    }, 1200);
+    }, 0);
   }
 
   function speakWord(word) {
@@ -859,6 +979,46 @@
     .btn-save:disabled {
       opacity: 0.75;
       cursor: default;
+    }
+  `;
+
+  const TOAST_CSS = `
+    :host {
+      all: initial;
+    }
+
+    .toast {
+      position: fixed;
+      top: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      box-sizing: border-box;
+      max-width: min(520px, calc(100vw - 24px));
+      padding: 10px 14px;
+      border-radius: 10px;
+      background: rgba(13, 17, 23, 0.92);
+      border: 1px solid rgba(48, 54, 61, 0.9);
+      color: #f0f6fc;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.2px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+      z-index: 2147483647;
+      animation: toast-in 0.15s ease-out, toast-out 0.2s ease-in 1.2s forwards;
+      pointer-events: none;
+      text-align: center;
+      line-height: 1.4;
+      user-select: none;
+    }
+
+    @keyframes toast-in {
+      from { opacity: 0; transform: translateX(-50%) translateY(-8px); }
+      to { opacity: 1; transform: translateX(-50%) translateY(0); }
+    }
+
+    @keyframes toast-out {
+      to { opacity: 0; transform: translateX(-50%) translateY(-10px); }
     }
   `;
 })();
