@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "WordCatcher",
   "version": "1.0.0",
-  "description": "按住 Ctrl 悬停查词，一键收录到单词本。",
+  "description": "按住 Ctrl/Cmd 悬停查词，一键收录到单词本。",
   "author": "Trae GPT-5.4",
   "icons": {
     "16": "assets/icons/icon16.png",
