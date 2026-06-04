@@ -135,19 +135,35 @@
           <label for="syncEnabled">同步到 word-base</label>
         </div>
 
-        <div class="field">
-          <label for="syncBaseUrl">word-base API 地址</label>
-          <input id="syncBaseUrl" name="syncBaseUrl" type="text" placeholder="http://localhost:3001" />
+        <div id="auth-section">
+          <div id="auth-logged-out">
+            <div class="field">
+              <label for="authEmail">邮箱</label>
+              <input id="authEmail" name="authEmail" type="email" placeholder="your@email.com" />
+            </div>
+            <div class="field">
+              <label for="authPassword">密码</label>
+              <input id="authPassword" name="authPassword" type="password" placeholder="至少6个字符" />
+            </div>
+            <div style="display:flex; gap: 12px; flex-wrap: wrap;">
+              <button type="button" id="auth-login" style="background:#1f6feb;">登录</button>
+              <button type="button" id="auth-register" style="background:#8957e5;">注册</button>
+            </div>
+          </div>
+          <div id="auth-logged-in" style="display:none;">
+            <div class="field">
+              <label>已登录</label>
+              <div id="auth-user-info"></div>
+            </div>
+            <div style="display:flex; gap: 12px; flex-wrap: wrap;">
+              <button type="button" id="auth-logout" style="background:#f85149;">退出登录</button>
+              <button type="button" id="sync-now" style="background:#1f6feb;">立即同步</button>
+            </div>
+          </div>
         </div>
 
-        <div class="field">
-          <label for="pairingCode">配对码（从 word-base 同步页面复制）</label>
-          <input id="pairingCode" name="pairingCode" type="text" placeholder="例如：AB12CD34" />
-        </div>
-
-        <div style="display:flex; gap: 12px; flex-wrap: wrap;">
+        <div style="display:flex; gap: 12px; flex-wrap: wrap; margin-top: 24px;">
           <button type="submit">保存设置</button>
-          <button type="button" id="sync-now" style="background:#1f6feb;">立即同步</button>
         </div>
       </form>
 

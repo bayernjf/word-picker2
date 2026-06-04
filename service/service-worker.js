@@ -12,13 +12,25 @@ import { translateWord } from "../lib/translator.js";
 
 const STORAGE_DEVICE_ID = "deviceId";
 const STORAGE_SYNC_QUEUE = "syncQueue";
+const STORAGE_AUTH = "authData";
+
+let authRefreshing = false;
 
 chrome.runtime.onInstalled.addListener(() => {
   ensureDefaults();
+  setupAlarms();
 });
 
 chrome.runtime.onStartup?.addListener(() => {
   ensureDefaults();
+  setupAlarms();
+});
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === "sync-words") {
+    const settings = await getSettings();
+    await flushSyncQueue(settings);
+  }
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -58,6 +70,14 @@ async function handleMessage(message) {
       return handleGetSyncStatus();
     case "PING":
       return { pong: true };
+    case "AUTH_LOGIN":
+      return handleAuthLogin(message.email, message.password, message.baseUrl);
+    case "AUTH_REGISTER":
+      return handleAuthRegister(message.email, message.password, message.baseUrl);
+    case "AUTH_LOGOUT":
+      return handleAuthLogout();
+    case "AUTH_STATUS":
+      return handleAuthStatus();
     default:
       throw new Error(`未知消息类型：${message?.type || "EMPTY"}`);
   }
@@ -104,14 +124,16 @@ async function handleSyncNow() {
 }
 
 async function handleGetSyncStatus() {
+  const auth = await getAuthData();
   const settings = await getSettings();
   const deviceId = await ensureDeviceId();
   const queue = await getSyncQueue();
   return {
     deviceId,
     queueSize: queue.length,
-    hasToken: Boolean(settings?.syncToken),
-    hasPairingCode: Boolean(settings?.pairingCode)
+    isLoggedIn: Boolean(auth?.accessToken && auth?.refreshToken),
+    user: auth?.user || null,
+    lastSyncAt: auth?.lastSyncAt || null
   };
 }
 
@@ -159,33 +181,20 @@ function normalizeBaseUrl(settings) {
 }
 
 async function flushSyncQueue(settings) {
-  const baseUrl = normalizeBaseUrl(settings);
-  if (!baseUrl) {
+  const auth = await getAuthData();
+  if (!auth?.accessToken || !auth?.refreshToken || !auth?.baseUrl) {
     const queue = await getSyncQueue();
     return { ok: false, skipped: true, queueSize: queue.length };
   }
 
+  const baseUrl = auth.baseUrl;
   const deviceId = await ensureDeviceId();
   const queue = await getSyncQueue();
   if (queue.length === 0) {
     return { ok: true, queueSize: 0, processed: 0 };
   }
 
-  let token = typeof settings?.syncToken === "string" ? settings.syncToken.trim() : "";
-  const pairingCode = typeof settings?.pairingCode === "string" ? settings.pairingCode.trim().toUpperCase() : "";
-  if (!token && pairingCode) {
-    const claimed = await claimSyncToken(baseUrl, pairingCode, deviceId);
-    if (claimed.ok && claimed.token) {
-      await saveSettings({ syncToken: claimed.token });
-      token = claimed.token;
-    } else {
-      return { ok: false, error: claimed.error || "claim_failed", queueSize: queue.length };
-    }
-  }
-  if (!token) {
-    return { ok: false, error: "no_token", queueSize: queue.length };
-  }
-
+  let token = auth.accessToken;
   const batch = queue.slice(0, 50);
   const payloadEntries = batch.map((entry) => ({
     ...(entry || {}),
@@ -196,7 +205,7 @@ async function flushSyncQueue(settings) {
   }));
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5000);
+  const timeout = setTimeout(() => controller.abort(), 10000);
   try {
     let attempt = 0;
     while (attempt < 2) {
@@ -212,19 +221,19 @@ async function flushSyncQueue(settings) {
       const text = await res.text();
 
       if (res.status === 401) {
-        await saveSettings({ syncToken: "" });
-        token = "";
-        if (pairingCode) {
-          const claimed = await claimSyncToken(baseUrl, pairingCode, deviceId);
-          if (claimed.ok && claimed.token) {
-            await saveSettings({ syncToken: claimed.token });
-            token = claimed.token;
-            attempt += 1;
-            continue;
-          }
-          return { ok: false, status: claimed.status, error: claimed.error || "claim_failed", queueSize: queue.length };
+        const refreshed = await doRefreshToken(baseUrl, auth.refreshToken);
+        if (refreshed.ok && refreshed.accessToken) {
+          token = refreshed.accessToken;
+          await setAuthData({
+            ...auth,
+            accessToken: token,
+            lastSyncAt: Date.now()
+          });
+          attempt += 1;
+          continue;
         }
-        return { ok: false, status: 401, error: text || '{"error":"unauthorized"}', queueSize: queue.length };
+        await setAuthData(null);
+        return { ok: false, status: 401, error: "token_refresh_failed", queueSize: queue.length };
       }
 
       if (!res.ok) {
@@ -242,6 +251,7 @@ async function flushSyncQueue(settings) {
         const processedSet = new Set(processedEntryIds);
         const nextQueue = queue.filter((item) => !processedSet.has(item?.id));
         await setSyncQueue(nextQueue);
+        await setAuthData({ ...auth, lastSyncAt: Date.now() });
         return {
           ok: true,
           queueSize: nextQueue.length,
@@ -347,4 +357,165 @@ function toCsv(words) {
 function csvEscape(value) {
   const text = String(value).replace(/"/g, "\"\"");
   return `"${text}"`;
+}
+
+async function setupAlarms() {
+  const existing = await chrome.alarms.get("sync-words");
+  if (!existing) {
+    await chrome.alarms.create("sync-words", { periodInMinutes: 3 });
+  }
+}
+
+async function getAuthData() {
+  const data = await chrome.storage.local.get([STORAGE_AUTH]);
+  const auth = data?.[STORAGE_AUTH];
+  return auth && typeof auth === "object" ? auth : null;
+}
+
+async function setAuthData(auth) {
+  await chrome.storage.local.set({ [STORAGE_AUTH]: auth });
+}
+
+async function handleAuthLogin(email, password, baseUrl) {
+  const normalizedUrl = baseUrl?.trim().replace(/\/+$/, "") || "http://localhost:3001";
+  const result = await doLoginOrRegister(normalizedUrl, "login", email, password);
+  if (result.ok && result.accessToken && result.refreshToken) {
+    await setAuthData({
+      accessToken: result.accessToken,
+      refreshToken: result.refreshToken,
+      user: result.user,
+      baseUrl: normalizedUrl,
+      lastSyncAt: Date.now()
+    });
+    await setupAlarms();
+    const settings = await getSettings();
+    await flushSyncQueue(settings);
+  }
+  return result;
+}
+
+async function handleAuthRegister(email, password, baseUrl) {
+  const normalizedUrl = baseUrl?.trim().replace(/\/+$/, "") || "http://localhost:3001";
+  const result = await doLoginOrRegister(normalizedUrl, "register", email, password);
+  if (result.ok && result.accessToken && result.refreshToken) {
+    await setAuthData({
+      accessToken: result.accessToken,
+      refreshToken: result.refreshToken,
+      user: result.user,
+      baseUrl: normalizedUrl,
+      lastSyncAt: Date.now()
+    });
+    await setupAlarms();
+    const settings = await getSettings();
+    await flushSyncQueue(settings);
+  }
+  return result;
+}
+
+async function handleAuthLogout() {
+  await setAuthData(null);
+  return { ok: true };
+}
+
+async function handleAuthStatus() {
+  const auth = await getAuthData();
+  return {
+    ok: true,
+    isLoggedIn: Boolean(auth?.accessToken && auth?.refreshToken),
+    user: auth?.user || null,
+    baseUrl: auth?.baseUrl || ""
+  };
+}
+
+async function doLoginOrRegister(baseUrl, type, email, password) {
+  const endpoint = type === "login" ? "/api/v1/auth/login" : "/api/v1/auth/register";
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const res = await fetch(`${baseUrl}${endpoint}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+      signal: controller.signal
+    });
+    const text = await res.text();
+    clearTimeout(timeout);
+    if (!res.ok) {
+      return { ok: false, status: res.status, error: text || "request_failed" };
+    }
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = null;
+    }
+    if (!data || !data.accessToken || !data.refreshToken) {
+      return { ok: false, error: "invalid_response" };
+    }
+    return { ok: true, accessToken: data.accessToken, refreshToken: data.refreshToken, user: data.user };
+  } catch (error) {
+    clearTimeout(timeout);
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+async function ensureValidAccessToken(baseUrl) {
+  const auth = await getAuthData();
+  if (!auth?.accessToken || !auth?.refreshToken) {
+    return null;
+  }
+  if (!authRefreshing) {
+    return auth.accessToken;
+  }
+  const isExpired = auth.expiresAt && Number(auth.expiresAt) < Date.now();
+  if (!isExpired) {
+    return auth.accessToken;
+  }
+  authRefreshing = true;
+  try {
+    const result = await doRefreshToken(baseUrl, auth.refreshToken);
+    if (result.ok && result.accessToken) {
+      await setAuthData({
+        ...auth,
+        accessToken: result.accessToken,
+        lastSyncAt: Date.now(),
+        expiresAt: Date.now() + 23 * 60 * 60 * 1000
+      });
+      return result.accessToken;
+    }
+    return null;
+  } finally {
+    authRefreshing = false;
+  }
+}
+
+async function doRefreshToken(baseUrl, refreshToken) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const res = await fetch(`${baseUrl}/api/v1/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refreshToken }),
+      signal: controller.signal
+    });
+    const text = await res.text();
+    clearTimeout(timeout);
+    if (!res.ok) {
+      return { ok: false, status: res.status, error: text || "refresh_failed" };
+    }
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = null;
+    }
+    if (!data?.accessToken) {
+      return { ok: false, error: "invalid_refresh_response" };
+    }
+    return { ok: true, accessToken: data.accessToken, user: data.user };
+  } catch (error) {
+    clearTimeout(timeout);
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
 }
