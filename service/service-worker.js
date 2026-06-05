@@ -112,7 +112,6 @@ async function handleSaveWord(entry) {
 
   return {
     saved: Boolean(result.success),
-    duplicate: Boolean(result.duplicate),
     entry: result.entry,
     sync
   };
@@ -314,6 +313,7 @@ async function handleExportWords(format) {
   const words = await getWords();
   const normalized = String(format || "json").toLowerCase();
 
+  // 导出为新格式的 JSON，包含 words 数组
   if (normalized === "csv") {
     return {
       format: "csv",
@@ -325,28 +325,31 @@ async function handleExportWords(format) {
   return {
     format: "json",
     fileName: "wordcatcher-words.json",
-    data: JSON.stringify(words, null, 2)
+    data: JSON.stringify({ words: words }, null, 2)
   };
 }
 
 function toCsv(words) {
   const headers = [
     "word",
-    "phonetic",
-    "meaning",
-    "exampleEn",
-    "exampleZh",
-    "sentence",
-    "sourceUrl",
-    "sourceTitle",
-    "createdAt"
+    "frequency",
+    "translation",
+    "timeAdded",
+    "timeUpdated",
+    "contextCount"
   ];
 
   const lines = [headers.join(",")];
   words.forEach((word) => {
+    const contextCount = (word.contexts?.length || 0).toString();
     lines.push(
       headers
-        .map((header) => csvEscape(word[header] ?? ""))
+        .map((header) => {
+          if (header === "contextCount") {
+            return csvEscape(contextCount);
+          }
+          return csvEscape(word[header] ?? word._legacy?.[header] ?? "");
+        })
         .join(",")
     );
   });

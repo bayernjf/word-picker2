@@ -119,6 +119,12 @@ body {
   font-size: 13px;
 }
 
+.frequency {
+  margin-top: 6px;
+  color: #8b949e;
+  font-size: 12px;
+}
+
 .sentence {
   margin-top: 8px;
   color: #8b949e;

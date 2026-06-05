@@ -735,19 +735,38 @@
 
   function buildWordEntry(lookup) {
     const sentence = extractSentenceFromDetection(lookup);
+    const now = Date.now();
+    
+    // 构建上下文对象
+    const contexts = [];
+    if (sentence) {
+      contexts.push({
+        context: sentence,
+        timeAdded: now,
+        sourceLink: window.location.href,
+        translation: ""
+      });
+    }
+    
     return {
-      id: crypto.randomUUID(),
       word: lookup.translation.word || lookup.word,
-      phonetic: lookup.translation.phonetic || "",
-      meaning: lookup.translation.meaning || "",
-      exampleEn: lookup.translation.exampleEn || "",
-      exampleZh: lookup.translation.exampleZh || "",
-      sentence,
-      sourceUrl: window.location.href,
-      sourceTitle: document.title,
-      tags: [],
-      createdAt: Date.now(),
-      reviewCount: 0
+      frequency: contexts.length || 1,
+      translation: lookup.translation.meaning || "",
+      timeAdded: now,
+      timeUpdated: now,
+      contexts: contexts,
+      // 保留旧数据作为兼容
+      _legacy: {
+        id: crypto.randomUUID(),
+        phonetic: lookup.translation.phonetic || "",
+        exampleEn: lookup.translation.exampleEn || "",
+        exampleZh: lookup.translation.exampleZh || "",
+        sourceUrl: window.location.href,
+        sourceTitle: document.title,
+        tags: [],
+        createdAt: now,
+        reviewCount: 0
+      }
     };
   }
 
@@ -776,14 +795,8 @@
       return;
     }
 
-    if (response.saved && !response.duplicate) {
+    if (response.saved) {
       showToast("添加成功");
-      safeClosePopupAndReset();
-      return;
-    }
-
-    if (response.duplicate) {
-      showToast("已添加");
       safeClosePopupAndReset();
       return;
     }

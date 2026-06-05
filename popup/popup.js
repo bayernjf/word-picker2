@@ -45,20 +45,22 @@ function renderList(words) {
   }
 
   wordList.innerHTML = words
-    .map((item) => {
+    .map((item, index) => {
+      const wordId = item._legacy?.id || `word-${index}`;
+      const phonetic = item._legacy?.phonetic || "";
+      const meaning = item.translation || item._legacy?.meaning || "";
+      const timeAdded = item.timeAdded || item._legacy?.createdAt;
+      
       return `
         <article class="word-card">
           <div class="word-card-header">
             <strong>${escapeHtml(item.word)}</strong>
-            <span class="phonetic">${escapeHtml(item.phonetic || "")}</span>
-            <button class="btn-delete" type="button" data-id="${escapeHtml(item.id)}" aria-label="删除">删除</button>
+            <span class="phonetic">${escapeHtml(phonetic)}</span>
+            <button class="btn-delete" type="button" data-id="${escapeHtml(wordId)}" aria-label="删除">删除</button>
           </div>
-          <div class="meaning">${escapeHtml(item.meaning || "")}</div>
-          <div class="sentence">上下文：${escapeHtml(truncate(item.sentence || "", 80))}</div>
-          <a class="source-link" href="${escapeHtml(item.sourceUrl || "#")}" target="_blank" rel="noreferrer">
-            查看来源：${escapeHtml(truncate(item.sourceTitle || item.sourceUrl || "", 50))}
-          </a>
-          <div class="meta">保存时间：${formatDate(item.createdAt)}</div>
+          <div class="meaning">${escapeHtml(meaning)}</div>
+          <div class="frequency">频率：${item.frequency || 0}</div>
+          <div class="meta">保存时间：${formatDate(timeAdded)}</div>
         </article>
       `;
     })
@@ -126,11 +128,24 @@ function truncate(value, maxLength) {
   return `${value.slice(0, maxLength - 1)}...`;
 }
 
-function formatDate(timestamp) {
-  if (!timestamp) {
+function formatDate(timeValue) {
+  if (!timeValue) {
     return "未知";
   }
-  return new Date(timestamp).toLocaleString("zh-CN", {
+  let date;
+  if (typeof timeValue === "number") {
+    date = new Date(timeValue);
+  } else if (typeof timeValue === "string") {
+    date = new Date(timeValue);
+  } else {
+    return "未知";
+  }
+  
+  if (isNaN(date.getTime())) {
+    return "未知";
+  }
+  
+  return date.toLocaleString("zh-CN", {
     hour12: false
   });
 }
