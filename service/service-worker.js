@@ -1,33 +1,36 @@
-import { getCachedTranslation, setCachedTranslation } from "../lib/cache.js";
 import {
   addWord,
   deleteWordById,
   ensureDefaults,
+  getBooks,
   getSettings,
   getWords,
+  getWordsByBook,
+  saveBooks,
   saveSettings,
-  searchWords
-} from "../lib/storage.js";
-import { translateWord } from "../lib/translator.js";
+  saveWords,
+  searchWords,
+} from '../lib/storage.js';
 
-const STORAGE_DEVICE_ID = "deviceId";
-const STORAGE_SYNC_QUEUE = "syncQueue";
-const STORAGE_AUTH = "authData";
+const STORAGE_DEVICE_ID = 'deviceId';
+const STORAGE_SYNC_QUEUE = 'syncQueue';
+const STORAGE_DELETE_QUEUE = 'deleteQueue';
+const STORAGE_AUTH = 'authData';
 
-let authRefreshing = false;
+let isSyncing = false;
 
 chrome.runtime.onInstalled.addListener(() => {
-  ensureDefaults();
-  setupAlarms();
+  void ensureDefaults();
+  void setupAlarms();
 });
 
 chrome.runtime.onStartup?.addListener(() => {
-  ensureDefaults();
-  setupAlarms();
+  void ensureDefaults();
+  void setupAlarms();
 });
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name === "sync-words") {
+  if (alarm.name === 'sync-words') {
     const settings = await getSettings();
     await flushSyncQueue(settings);
   }
@@ -39,7 +42,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     .catch((error) => {
       sendResponse({
         success: false,
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
       });
     });
 
@@ -50,329 +53,445 @@ async function handleMessage(message) {
   await ensureDefaults();
 
   switch (message?.type) {
-    case "TRANSLATE":
-      return handleTranslate(message.word);
-    case "SAVE_WORD":
-      return handleSaveWord(message.entry);
-    case "DELETE_WORD":
-      return handleDeleteWord(message.id);
-    case "GET_WORDS":
-      return { words: await searchWords(message.query || "") };
-    case "EXPORT_WORDS":
-      return handleExportWords(message.format || "json");
-    case "GET_SETTINGS":
+    case 'SAVE_WORD':
+      return handleSaveWord(message.entry || message.word);
+    case 'DELETE_WORD':
+      return handleDeleteWord(message.id || message.wordId);
+    case 'GET_WORDS':
+      return { words: await searchWords(message.query || '') };
+    case 'GET_BOOKS':
+      return { books: await getBooks() };
+    case 'GET_BOOK_WORDS':
+      return { words: await getWordsByBook(message.bookId, message.query || '') };
+    case 'EXPORT_WORDS':
+      return handleExportWords(message.format || 'json');
+    case 'GET_SETTINGS':
       return { settings: await getSettings() };
-    case "SAVE_SETTINGS":
+    case 'SAVE_SETTINGS':
       return { settings: await saveSettings(message.settings || {}) };
-    case "SYNC_NOW":
-      return handleSyncNow();
-    case "GET_SYNC_STATUS":
+    case 'SYNC_NOW':
+    case 'TRIGGER_SYNC':
+      return { sync: await handleSyncNow() };
+    case 'GET_SYNC_STATUS':
       return handleGetSyncStatus();
-    case "PING":
-      return { pong: true };
-    case "AUTH_LOGIN":
+    case 'AUTH_LOGIN':
       return handleAuthLogin(message.email, message.password, message.baseUrl);
-    case "AUTH_REGISTER":
+    case 'AUTH_REGISTER':
       return handleAuthRegister(message.email, message.password, message.baseUrl);
-    case "AUTH_LOGOUT":
+    case 'AUTH_LOGOUT':
       return handleAuthLogout();
-    case "AUTH_STATUS":
+    case 'AUTH_STATUS':
       return handleAuthStatus();
+    case 'PING':
+      return { pong: true };
     default:
-      throw new Error(`未知消息类型：${message?.type || "EMPTY"}`);
+      throw new Error(`未知消息类型：${message?.type || 'EMPTY'}`);
   }
-}
-
-async function handleTranslate(word) {
-  const settings = await getSettings();
-  const cached = await getCachedTranslation(word);
-  if (cached) {
-    return { translation: cached, cached: true };
-  }
-
-  const translation = await translateWord(word, settings);
-  await setCachedTranslation(word, translation, settings.maxCacheSize || 200);
-
-  return {
-    translation,
-    cached: false
-  };
 }
 
 async function handleSaveWord(entry) {
   if (!entry?.word) {
-    throw new Error("单词内容不能为空");
+    throw new Error('单词内容不能为空');
   }
 
-  const settings = await getSettings();
-  const result = await addWord(entry);
+  const existingWords = await getWords();
+  const duplicate = existingWords.some(
+    (item) => String(item?.word || '').toLowerCase() === String(entry.word || '').toLowerCase()
+  );
 
-  await enqueueSyncEntry(entry);
-  const sync = await flushSyncQueue(settings);
+  const result = await addWord(entry);
+  await enqueueSyncEntry(result.entry || entry);
+  const sync = await flushSyncQueue(await getSettings());
 
   return {
     saved: Boolean(result.success),
+    duplicate,
     entry: result.entry,
-    sync
+    sync,
   };
-}
-
-async function handleSyncNow() {
-  const settings = await getSettings();
-  return { sync: await flushSyncQueue(settings) };
-}
-
-async function handleGetSyncStatus() {
-  const auth = await getAuthData();
-  const settings = await getSettings();
-  const deviceId = await ensureDeviceId();
-  const queue = await getSyncQueue();
-  return {
-    deviceId,
-    queueSize: queue.length,
-    isLoggedIn: Boolean(auth?.accessToken && auth?.refreshToken),
-    user: auth?.user || null,
-    lastSyncAt: auth?.lastSyncAt || null
-  };
-}
-
-async function ensureDeviceId() {
-  const current = await chrome.storage.local.get([STORAGE_DEVICE_ID]);
-  const existing = typeof current?.[STORAGE_DEVICE_ID] === "string" ? current[STORAGE_DEVICE_ID].trim() : "";
-  if (existing) {
-    return existing;
-  }
-  const next = globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `device-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  await chrome.storage.local.set({ [STORAGE_DEVICE_ID]: next });
-  return next;
-}
-
-async function getSyncQueue() {
-  const current = await chrome.storage.local.get([STORAGE_SYNC_QUEUE]);
-  const queue = current?.[STORAGE_SYNC_QUEUE];
-  return Array.isArray(queue) ? queue : [];
-}
-
-async function setSyncQueue(queue) {
-  await chrome.storage.local.set({ [STORAGE_SYNC_QUEUE]: queue });
-  return queue;
-}
-
-async function enqueueSyncEntry(entry) {
-  if (!entry?.id || !entry?.word) {
-    return;
-  }
-  const queue = await getSyncQueue();
-  const exists = queue.some((item) => item?.id === entry.id);
-  if (exists) {
-    return;
-  }
-  const next = [entry, ...queue].slice(0, 500);
-  await setSyncQueue(next);
-}
-
-function normalizeBaseUrl(settings) {
-  const shouldSync = Boolean(settings?.syncEnabled) && typeof settings?.syncBaseUrl === "string";
-  if (!shouldSync) {
-    return "";
-  }
-  return settings.syncBaseUrl.trim().replace(/\/+$/, "");
-}
-
-async function flushSyncQueue(settings) {
-  const auth = await getAuthData();
-  if (!auth?.accessToken || !auth?.refreshToken || !auth?.baseUrl) {
-    const queue = await getSyncQueue();
-    return { ok: false, skipped: true, queueSize: queue.length };
-  }
-
-  const baseUrl = auth.baseUrl;
-  const deviceId = await ensureDeviceId();
-  const queue = await getSyncQueue();
-  if (queue.length === 0) {
-    return { ok: true, queueSize: 0, processed: 0 };
-  }
-
-  let token = auth.accessToken;
-  const batch = queue.slice(0, 50);
-  const payloadEntries = batch.map((entry) => ({
-    ...(entry || {}),
-    client: {
-      deviceId,
-      entryId: entry.id
-    }
-  }));
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
-  try {
-    let attempt = 0;
-    while (attempt < 2) {
-      const res = await fetch(`${baseUrl}/api/v1/words/batch`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          deviceId,
-          entries: payloadEntries
-        }),
-        signal: controller.signal
-      });
-      const text = await res.text();
-
-      if (res.status === 401) {
-        const refreshed = await doRefreshToken(baseUrl, auth.refreshToken);
-        if (refreshed.ok && refreshed.accessToken) {
-          token = refreshed.accessToken;
-          await setAuthData({
-            ...auth,
-            accessToken: token,
-            lastSyncAt: Date.now()
-          });
-          attempt += 1;
-          continue;
-        }
-        await setAuthData(null);
-        return { ok: false, status: 401, error: "token_refresh_failed", queueSize: queue.length };
-      }
-
-      if (!res.ok) {
-        return { ok: false, status: res.status, error: text || "request_failed", queueSize: queue.length };
-      }
-
-      let data = null;
-      try {
-        data = text ? JSON.parse(text) : null;
-      } catch {
-        data = null;
-      }
-      const processedEntryIds = Array.isArray(data?.processedEntryIds) ? data.processedEntryIds : [];
-      if (processedEntryIds.length > 0) {
-        const processedSet = new Set(processedEntryIds);
-        const nextQueue = queue.filter((item) => !processedSet.has(item?.id));
-        await setSyncQueue(nextQueue);
-        await setAuthData({ ...auth, lastSyncAt: Date.now() });
-        return {
-          ok: true,
-          queueSize: nextQueue.length,
-          processed: processedEntryIds.length,
-          savedCount: Number.isFinite(data?.savedCount) ? data.savedCount : undefined,
-          duplicateCount: Number.isFinite(data?.duplicateCount) ? data.duplicateCount : undefined
-        };
-      }
-      return { ok: true, queueSize: queue.length, processed: 0 };
-    }
-
-    return { ok: false, error: "unauthorized", queueSize: queue.length };
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error), queueSize: queue.length };
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function claimSyncToken(baseUrl, pairingCode, deviceId) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5000);
-  try {
-    const res = await fetch(`${baseUrl}/api/v1/pairing/claim`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code: pairingCode, deviceId }),
-      signal: controller.signal
-    });
-    const text = await res.text();
-    if (!res.ok) {
-      return { ok: false, status: res.status, error: text || "claim_failed" };
-    }
-    let data = null;
-    try {
-      data = text ? JSON.parse(text) : null;
-    } catch {
-      data = null;
-    }
-    const token = typeof data?.token === "string" ? data.token : "";
-    if (!token) {
-      return { ok: false, error: "claim_failed" };
-    }
-    return { ok: true, token };
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
-  } finally {
-    clearTimeout(timeout);
-  }
 }
 
 async function handleDeleteWord(id) {
+  if (!id) {
+    throw new Error('缺少单词 id');
+  }
+
   const result = await deleteWordById(id);
+  if (result.success) {
+    await enqueueDelete(id);
+  }
+
+  const sync = await flushSyncQueue(await getSettings());
   return {
-    deleted: Boolean(result.success)
+    deleted: Boolean(result.success),
+    sync,
   };
 }
 
 async function handleExportWords(format) {
   const words = await getWords();
-  const normalized = String(format || "json").toLowerCase();
+  const normalized = String(format || 'json').toLowerCase();
 
-  // 导出为新格式的 JSON，包含 words 数组
-  if (normalized === "csv") {
+  if (normalized === 'csv') {
     return {
-      format: "csv",
-      fileName: "wordcatcher-words.csv",
-      data: toCsv(words)
+      format: 'csv',
+      fileName: 'wordcatcher-words.csv',
+      data: toCsv(words),
     };
   }
 
   return {
-    format: "json",
-    fileName: "wordcatcher-words.json",
-    data: JSON.stringify({ words: words }, null, 2)
+    format: 'json',
+    fileName: 'wordcatcher-words.json',
+    data: JSON.stringify({ words }, null, 2),
   };
 }
 
 function toCsv(words) {
-  const headers = [
-    "word",
-    "frequency",
-    "translation",
-    "timeAdded",
-    "timeUpdated",
-    "contextCount"
-  ];
-
-  const lines = [headers.join(",")];
+  const headers = ['word', 'frequency', 'translation', 'timeAdded', 'timeUpdated', 'contextCount'];
+  const lines = [headers.join(',')];
   words.forEach((word) => {
     const contextCount = (word.contexts?.length || 0).toString();
     lines.push(
       headers
         .map((header) => {
-          if (header === "contextCount") {
+          if (header === 'contextCount') {
             return csvEscape(contextCount);
           }
-          return csvEscape(word[header] ?? word._legacy?.[header] ?? "");
+          return csvEscape(word[header] ?? word._legacy?.[header] ?? '');
         })
-        .join(",")
+        .join(',')
     );
   });
-
-  return lines.join("\n");
+  return lines.join('\n');
 }
 
 function csvEscape(value) {
-  const text = String(value).replace(/"/g, "\"\"");
+  const text = String(value).replace(/"/g, '""');
   return `"${text}"`;
 }
 
+async function handleSyncNow() {
+  return flushSyncQueue(await getSettings());
+}
+
+async function handleGetSyncStatus() {
+  const auth = await getAuthData();
+  const deviceId = await ensureDeviceId();
+  const syncQueue = await getSyncQueue();
+  const deleteQueue = await getDeleteQueue();
+
+  return {
+    deviceId,
+    queueSize: syncQueue.length + deleteQueue.length,
+    isLoggedIn: Boolean(auth?.accessToken && auth?.refreshToken),
+    user: auth?.user || null,
+    lastSyncAt: auth?.lastSyncAt || null,
+  };
+}
+
 async function setupAlarms() {
-  const existing = await chrome.alarms.get("sync-words");
+  const existing = await chrome.alarms.get('sync-words');
   if (!existing) {
-    await chrome.alarms.create("sync-words", { periodInMinutes: 3 });
+    await chrome.alarms.create('sync-words', { periodInMinutes: 3 });
+  }
+}
+
+async function ensureDeviceId() {
+  const current = await chrome.storage.local.get([STORAGE_DEVICE_ID]);
+  const existing = typeof current?.[STORAGE_DEVICE_ID] === 'string' ? current[STORAGE_DEVICE_ID].trim() : '';
+  if (existing) {
+    return existing;
+  }
+  const next = globalThis.crypto?.randomUUID
+    ? globalThis.crypto.randomUUID()
+    : `device-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  await chrome.storage.local.set({ [STORAGE_DEVICE_ID]: next });
+  return next;
+}
+
+async function getQueue(key) {
+  const current = await chrome.storage.local.get([key]);
+  return Array.isArray(current?.[key]) ? current[key] : [];
+}
+
+async function setQueue(key, queue) {
+  await chrome.storage.local.set({ [key]: queue });
+  return queue;
+}
+
+async function getSyncQueue() {
+  return getQueue(STORAGE_SYNC_QUEUE);
+}
+
+async function setSyncQueue(queue) {
+  return setQueue(STORAGE_SYNC_QUEUE, queue);
+}
+
+async function getDeleteQueue() {
+  return getQueue(STORAGE_DELETE_QUEUE);
+}
+
+async function setDeleteQueue(queue) {
+  return setQueue(STORAGE_DELETE_QUEUE, queue);
+}
+
+async function enqueueSyncEntry(entry) {
+  if (!entry?.word) {
+    return;
+  }
+  const queue = await getSyncQueue();
+  const entryId = entry.id || entry._legacy?.id || `${entry.word}-${entry.timeAdded || Date.now()}`;
+  const exists = queue.some((item) => (item.id || item._legacy?.id) === entryId);
+  if (exists) {
+    return;
+  }
+  await setSyncQueue([{ ...entry, id: entryId }, ...queue].slice(0, 500));
+}
+
+async function enqueueDelete(wordId) {
+  const queue = await getDeleteQueue();
+  if (queue.includes(wordId)) {
+    return;
+  }
+  await setDeleteQueue([wordId, ...queue].slice(0, 500));
+}
+
+function normalizeBaseUrl(settings, auth) {
+  const authBaseUrl = typeof auth?.baseUrl === 'string' ? auth.baseUrl.trim() : '';
+  if (authBaseUrl) {
+    return authBaseUrl.replace(/\/+$/, '');
+  }
+  const settingsBaseUrl = typeof settings?.syncBaseUrl === 'string' ? settings.syncBaseUrl.trim() : '';
+  return (settingsBaseUrl || 'http://localhost:3001').replace(/\/+$/, '');
+}
+
+async function pullChanges(auth, settings) {
+  const baseUrl = normalizeBaseUrl(settings, auth);
+  const token = auth.accessToken;
+  const [booksRes, wordsRes] = await Promise.all([
+    fetch(`${baseUrl}/api/v1/books`, { headers: { Authorization: `Bearer ${token}` } }),
+    fetch(`${baseUrl}/api/v1/words`, { headers: { Authorization: `Bearer ${token}` } }),
+  ]);
+
+  if (booksRes.status === 401 || wordsRes.status === 401) {
+    throw new Error('unauthorized');
+  }
+
+  if (booksRes.ok) {
+    const books = await booksRes.json();
+    await saveBooks(Array.isArray(books) ? books.map(mapServerBookToLocal) : []);
+  }
+
+  if (wordsRes.ok) {
+    const words = await wordsRes.json();
+    await saveWords(Array.isArray(words) ? words.map(mapServerWordToLocal) : []);
+  }
+}
+
+function mapServerBookToLocal(book) {
+  return {
+    id: book.id,
+    name: book.name || '默认',
+    description: book.description || '',
+    wordCount: Number(book.word_count) || 0,
+    icon: book.icon || 'BookOpen',
+    isSync: Boolean(book.is_sync),
+    createdAt: Date.parse(book.created_at) || Date.now(),
+    updatedAt: Date.parse(book.updated_at) || Date.now(),
+  };
+}
+
+function mapServerWordToLocal(word) {
+  const timeAdded = Date.parse(word.time_added || word.created_at) || Date.now();
+  const timeUpdated = Date.parse(word.time_updated || word.updated_at) || timeAdded;
+  const examples = Array.isArray(word.examples) ? word.examples : [];
+  return {
+    id: word.id,
+    word: word.word || '',
+    frequency: Number(word.frequency) || Math.max((word.contexts || []).length || 0, 1),
+    translation: word.translation || word.chinese_translation || '',
+    timeAdded,
+    timeUpdated,
+    contexts: Array.isArray(word.contexts) ? word.contexts : [],
+    bookId: word.book_id || '',
+    _legacy: {
+      id: word.id,
+      phonetic: word.phonetic || '',
+      exampleEn: examples[0]?.en || '',
+      exampleZh: examples[0]?.zh || '',
+      sourceUrl: word.meta?.sourceUrl || '',
+      sourceTitle: word.meta?.sourceTitle || '',
+      createdAt: timeAdded,
+      reviewCount: 0,
+    },
+  };
+}
+
+function mapLocalWordToServer(word) {
+  const timeAdded = word.timeAdded || word._legacy?.createdAt || Date.now();
+  const timeUpdated = word.timeUpdated || timeAdded;
+  return {
+    word: word.word,
+    frequency: word.frequency || Math.max((word.contexts || []).length || 0, 1),
+    translation: word.translation || '',
+    time_added: new Date(timeAdded).toISOString(),
+    time_updated: new Date(timeUpdated).toISOString(),
+    contexts: Array.isArray(word.contexts) ? word.contexts : [],
+    phonetic: word._legacy?.phonetic || '',
+    part_of_speech: '',
+    definition: word.translation || '',
+    chinese_translation: word.translation || '',
+    synonyms: [],
+    examples:
+      word._legacy?.exampleEn || word._legacy?.exampleZh
+        ? [
+            {
+              en: word._legacy?.exampleEn || '',
+              zh: word._legacy?.exampleZh || '',
+            },
+          ]
+        : [],
+    usage_history: [],
+    level: 'B2',
+    familiarity: 0,
+    book_id: word.bookId,
+    meta: {
+      sourceUrl: word._legacy?.sourceUrl || '',
+      sourceTitle: word._legacy?.sourceTitle || '',
+      createdAt: timeAdded,
+    },
+  };
+}
+
+async function pushDeletes(auth, settings) {
+  const deleteQueue = await getDeleteQueue();
+  if (deleteQueue.length === 0) {
+    return { ok: true, processed: 0 };
+  }
+
+  const baseUrl = normalizeBaseUrl(settings, auth);
+  const response = await fetch(`${baseUrl}/api/v1/words/batch-delete`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${auth.accessToken}`,
+    },
+    body: JSON.stringify({ wordIds: deleteQueue }),
+  });
+
+  if (response.status === 401) {
+    throw new Error('unauthorized');
+  }
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || 'delete_sync_failed');
+  }
+
+  await setDeleteQueue([]);
+  return { ok: true, processed: deleteQueue.length };
+}
+
+async function pushWords(auth, settings) {
+  const syncQueue = await getSyncQueue();
+  if (syncQueue.length === 0) {
+    return { ok: true, processed: 0 };
+  }
+
+  const baseUrl = normalizeBaseUrl(settings, auth);
+  const payload = syncQueue.map(mapLocalWordToServer).filter((item) => item.book_id);
+  if (payload.length === 0) {
+    await setSyncQueue([]);
+    return { ok: true, processed: 0 };
+  }
+
+  const response = await fetch(`${baseUrl}/api/v1/words/batch`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${auth.accessToken}`,
+    },
+    body: JSON.stringify({ words: payload }),
+  });
+
+  if (response.status === 401) {
+    throw new Error('unauthorized');
+  }
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || 'word_sync_failed');
+  }
+
+  await setSyncQueue([]);
+  return { ok: true, processed: payload.length };
+}
+
+async function flushSyncQueue(settings) {
+  const auth = await getAuthData();
+  if (!auth?.accessToken || !auth?.refreshToken) {
+    const queueSize = (await getSyncQueue()).length + (await getDeleteQueue()).length;
+    return { ok: false, skipped: true, queueSize };
+  }
+
+  if (isSyncing) {
+    return { ok: false, skipped: true, queueSize: (await getSyncQueue()).length + (await getDeleteQueue()).length };
+  }
+
+  isSyncing = true;
+  try {
+    let currentAuth = auth;
+
+    try {
+      await pullChanges(currentAuth, settings);
+      await pushDeletes(currentAuth, settings);
+      await pushWords(currentAuth, settings);
+    } catch (error) {
+      if (String(error?.message || error) !== 'unauthorized') {
+        throw error;
+      }
+
+      const refreshed = await doRefreshToken(normalizeBaseUrl(settings, currentAuth), currentAuth.refreshToken);
+      if (!refreshed.ok || !refreshed.accessToken) {
+        await setAuthData(null);
+        return { ok: false, error: refreshed.error || 'token_refresh_failed', queueSize: (await getSyncQueue()).length };
+      }
+
+      currentAuth = {
+        ...currentAuth,
+        accessToken: refreshed.accessToken,
+        refreshToken: refreshed.refreshToken || currentAuth.refreshToken,
+        user: refreshed.user || currentAuth.user,
+      };
+      await setAuthData({ ...currentAuth, lastSyncAt: Date.now() });
+
+      await pullChanges(currentAuth, settings);
+      await pushDeletes(currentAuth, settings);
+      await pushWords(currentAuth, settings);
+    }
+
+    await pullChanges(currentAuth, settings);
+    await setAuthData({ ...currentAuth, lastSyncAt: Date.now() });
+
+    return {
+      ok: true,
+      processed: 1,
+      queueSize: (await getSyncQueue()).length + (await getDeleteQueue()).length,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      queueSize: (await getSyncQueue()).length + (await getDeleteQueue()).length,
+    };
+  } finally {
+    isSyncing = false;
   }
 }
 
 async function getAuthData() {
   const data = await chrome.storage.local.get([STORAGE_AUTH]);
   const auth = data?.[STORAGE_AUTH];
-  return auth && typeof auth === "object" ? auth : null;
+  return auth && typeof auth === 'object' ? auth : null;
 }
 
 async function setAuthData(auth) {
@@ -380,37 +499,35 @@ async function setAuthData(auth) {
 }
 
 async function handleAuthLogin(email, password, baseUrl) {
-  const normalizedUrl = baseUrl?.trim().replace(/\/+$/, "") || "http://localhost:3001";
-  const result = await doLoginOrRegister(normalizedUrl, "login", email, password);
+  const normalizedUrl = (baseUrl || 'http://localhost:3001').trim().replace(/\/+$/, '');
+  const result = await doLoginOrRegister(normalizedUrl, 'login', email, password);
   if (result.ok && result.accessToken && result.refreshToken) {
     await setAuthData({
       accessToken: result.accessToken,
       refreshToken: result.refreshToken,
       user: result.user,
       baseUrl: normalizedUrl,
-      lastSyncAt: Date.now()
+      lastSyncAt: Date.now(),
     });
     await setupAlarms();
-    const settings = await getSettings();
-    await flushSyncQueue(settings);
+    await flushSyncQueue(await getSettings());
   }
   return result;
 }
 
 async function handleAuthRegister(email, password, baseUrl) {
-  const normalizedUrl = baseUrl?.trim().replace(/\/+$/, "") || "http://localhost:3001";
-  const result = await doLoginOrRegister(normalizedUrl, "register", email, password);
+  const normalizedUrl = (baseUrl || 'http://localhost:3001').trim().replace(/\/+$/, '');
+  const result = await doLoginOrRegister(normalizedUrl, 'register', email, password);
   if (result.ok && result.accessToken && result.refreshToken) {
     await setAuthData({
       accessToken: result.accessToken,
       refreshToken: result.refreshToken,
       user: result.user,
       baseUrl: normalizedUrl,
-      lastSyncAt: Date.now()
+      lastSyncAt: Date.now(),
     });
     await setupAlarms();
-    const settings = await getSettings();
-    await flushSyncQueue(settings);
+    await flushSyncQueue(await getSettings());
   }
   return result;
 }
@@ -426,99 +543,77 @@ async function handleAuthStatus() {
     ok: true,
     isLoggedIn: Boolean(auth?.accessToken && auth?.refreshToken),
     user: auth?.user || null,
-    baseUrl: auth?.baseUrl || ""
+    baseUrl: auth?.baseUrl || '',
   };
 }
 
 async function doLoginOrRegister(baseUrl, type, email, password) {
-  const endpoint = type === "login" ? "/api/v1/auth/login" : "/api/v1/auth/register";
+  const endpoint = type === 'login' ? '/api/v1/auth/login' : '/api/v1/auth/register';
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10000);
-  try {
-    const res = await fetch(`${baseUrl}${endpoint}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
-      signal: controller.signal
-    });
-    const text = await res.text();
-    clearTimeout(timeout);
-    if (!res.ok) {
-      return { ok: false, status: res.status, error: text || "request_failed" };
-    }
-    let data = null;
-    try {
-      data = text ? JSON.parse(text) : null;
-    } catch {
-      data = null;
-    }
-    if (!data || !data.accessToken || !data.refreshToken) {
-      return { ok: false, error: "invalid_response" };
-    }
-    return { ok: true, accessToken: data.accessToken, refreshToken: data.refreshToken, user: data.user };
-  } catch (error) {
-    clearTimeout(timeout);
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
-  }
-}
 
-async function ensureValidAccessToken(baseUrl) {
-  const auth = await getAuthData();
-  if (!auth?.accessToken || !auth?.refreshToken) {
-    return null;
-  }
-  if (!authRefreshing) {
-    return auth.accessToken;
-  }
-  const isExpired = auth.expiresAt && Number(auth.expiresAt) < Date.now();
-  if (!isExpired) {
-    return auth.accessToken;
-  }
-  authRefreshing = true;
   try {
-    const result = await doRefreshToken(baseUrl, auth.refreshToken);
-    if (result.ok && result.accessToken) {
-      await setAuthData({
-        ...auth,
-        accessToken: result.accessToken,
-        lastSyncAt: Date.now(),
-        expiresAt: Date.now() + 23 * 60 * 60 * 1000
-      });
-      return result.accessToken;
+    const response = await fetch(`${baseUrl}${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+      signal: controller.signal,
+    });
+    const text = await response.text();
+
+    if (!response.ok) {
+      return { ok: false, status: response.status, error: text || 'request_failed' };
     }
-    return null;
+
+    const data = text ? JSON.parse(text) : null;
+    if (!data?.accessToken || !data?.refreshToken) {
+      return { ok: false, error: 'invalid_response' };
+    }
+
+    return {
+      ok: true,
+      accessToken: data.accessToken,
+      refreshToken: data.refreshToken,
+      user: data.user || null,
+    };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
   } finally {
-    authRefreshing = false;
+    clearTimeout(timeout);
   }
 }
 
 async function doRefreshToken(baseUrl, refreshToken) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10000);
+
   try {
-    const res = await fetch(`${baseUrl}/api/v1/auth/refresh`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+    const response = await fetch(`${baseUrl}/api/v1/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refreshToken }),
-      signal: controller.signal
+      signal: controller.signal,
     });
-    const text = await res.text();
-    clearTimeout(timeout);
-    if (!res.ok) {
-      return { ok: false, status: res.status, error: text || "refresh_failed" };
+    const text = await response.text();
+
+    if (!response.ok) {
+      return { ok: false, status: response.status, error: text || 'refresh_failed' };
     }
-    let data = null;
-    try {
-      data = text ? JSON.parse(text) : null;
-    } catch {
-      data = null;
-    }
+
+    const data = text ? JSON.parse(text) : null;
     if (!data?.accessToken) {
-      return { ok: false, error: "invalid_refresh_response" };
+      return { ok: false, error: 'invalid_refresh_response' };
     }
-    return { ok: true, accessToken: data.accessToken, user: data.user };
+
+    return {
+      ok: true,
+      accessToken: data.accessToken,
+      refreshToken: data.refreshToken || refreshToken,
+      user: data.user || null,
+    };
   } catch (error) {
-    clearTimeout(timeout);
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    clearTimeout(timeout);
   }
 }

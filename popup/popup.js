@@ -3,15 +3,30 @@ const wordList = document.getElementById("word-list");
 const statusNode = document.getElementById("status");
 const exportJsonButton = document.getElementById("export-json");
 const exportCsvButton = document.getElementById("export-csv");
+const bookSelect = document.getElementById("book-select");
+const refreshBooksButton = document.getElementById("refresh-books");
+
+// 当前选中的单词本
+let currentBookId = "";
 
 document.addEventListener("DOMContentLoaded", () => {
   bindEvents();
+  loadBooks();
   loadWords();
 });
 
 function bindEvents() {
   searchInput.addEventListener("input", () => {
     loadWords(searchInput.value);
+  });
+
+  bookSelect.addEventListener("change", () => {
+    currentBookId = bookSelect.value;
+    loadWords(searchInput.value);
+  });
+
+  refreshBooksButton.addEventListener("click", () => {
+    loadBooks();
   });
 
   exportJsonButton.addEventListener("click", () => {
@@ -23,14 +38,68 @@ function bindEvents() {
   });
 }
 
+async function loadBooks() {
+  try {
+    const response = await sendMessage({
+      type: "GET_BOOKS"
+    });
+    renderBooks(response.books || []);
+  } catch (error) {
+    console.error("加载单词本失败", error);
+  }
+}
+
+function renderBooks(books) {
+  // 清空现有选项
+  bookSelect.innerHTML = '';
+  
+  // 添加单词本选项
+  books.forEach(book => {
+    const option = document.createElement("option");
+    option.value = book.id;
+    option.textContent = book.name;
+    if (book.isSync) {
+      option.textContent += " (同步单词本)";
+    }
+    bookSelect.appendChild(option);
+  });
+  
+  // 优先选择同步单词本，或者恢复之前选择的
+  const syncBook = books.find(b => b.isSync);
+  if (currentBookId && books.some(b => b.id === currentBookId)) {
+    bookSelect.value = currentBookId;
+  } else if (syncBook) {
+    currentBookId = syncBook.id;
+    bookSelect.value = currentBookId;
+  } else if (books.length > 0) {
+    currentBookId = books[0].id;
+    bookSelect.value = currentBookId;
+  }
+}
+
 async function loadWords(query = "") {
   setStatus("加载中...");
 
   try {
-    const response = await sendMessage({
-      type: "GET_WORDS",
-      query
-    });
+    // 如果没有选择单词本，尝试先加载单词本
+    if (!currentBookId) {
+      await loadBooks();
+    }
+
+    let response;
+    if (currentBookId) {
+      response = await sendMessage({
+        type: "GET_BOOK_WORDS",
+        bookId: currentBookId,
+        query
+      });
+    } else {
+      // 兜底：获取所有单词
+      response = await sendMessage({
+        type: "GET_WORDS",
+        query
+      });
+    }
     renderList(response.words || []);
     setStatus(`共 ${response.words?.length || 0} 条记录`);
   } catch (error) {
