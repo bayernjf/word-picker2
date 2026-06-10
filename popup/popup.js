@@ -9,10 +9,9 @@ const refreshBooksButton = document.getElementById("refresh-books");
 // 当前选中的单词本
 let currentBookId = "";
 
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
+  await checkAuthAndRender();
   bindEvents();
-  loadBooks();
-  loadWords();
 });
 
 function bindEvents() {
@@ -25,8 +24,9 @@ function bindEvents() {
     loadWords(searchInput.value);
   });
 
-  refreshBooksButton.addEventListener("click", () => {
-    loadBooks();
+  refreshBooksButton.addEventListener("click", async () => {
+    await loadBooks();
+    await loadWords(searchInput.value);
   });
 
   exportJsonButton.addEventListener("click", () => {
@@ -36,6 +36,14 @@ function bindEvents() {
   exportCsvButton.addEventListener("click", () => {
     exportWords("csv");
   });
+ 
+  const openOptionsBtn = document.getElementById("open-options");
+  if (openOptionsBtn) {
+    openOptionsBtn.addEventListener("click", async (event) => {
+      event.preventDefault();
+      await chrome.runtime.openOptionsPage();
+    });
+  }
 }
 
 async function loadBooks() {
@@ -65,7 +73,19 @@ function renderBooks(books) {
   });
   
   // 优先选择同步单词本，或者恢复之前选择的
-  const syncBook = books.find(b => b.isSync);
+  const syncBook = [...books]
+    .filter((book) => book?.isSync)
+    .sort((left, right) => {
+      const leftIsDefault = left.name === "默认";
+      const rightIsDefault = right.name === "默认";
+      if (leftIsDefault !== rightIsDefault) {
+        return leftIsDefault ? 1 : -1;
+      }
+
+      const leftUpdated = Number(left.updatedAt) || Number(left.createdAt) || 0;
+      const rightUpdated = Number(right.updatedAt) || Number(right.createdAt) || 0;
+      return rightUpdated - leftUpdated;
+    })[0];
   if (currentBookId && books.some(b => b.id === currentBookId)) {
     bookSelect.value = currentBookId;
   } else if (syncBook) {
@@ -226,6 +246,34 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+// 检查登录状态并渲染相应界面
+async function checkAuthAndRender() {
+  try {
+    const authStatus = await sendMessage({ type: "AUTH_STATUS" });
+    const authRequired = document.getElementById('auth-required');
+    const mainContent = document.getElementById('main-content');
+    const isLoggedIn = authStatus.isLoggedIn;
+
+    if (isLoggedIn) {
+      // 已登录，显示主内容
+      authRequired.style.display = 'none';
+      mainContent.style.display = 'block';
+      await loadBooks();
+      await loadWords();
+    } else {
+      // 未登录，显示登录提示
+      authRequired.style.display = 'block';
+      mainContent.style.display = 'none';
+    }
+  } catch (error) {
+    // 出错时默认显示登录提示
+    const authRequired = document.getElementById('auth-required');
+    const mainContent = document.getElementById('main-content');
+    authRequired.style.display = 'block';
+    mainContent.style.display = 'none';
+  }
 }
 
 function sendMessage(message) {

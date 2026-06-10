@@ -11,6 +11,7 @@ import {
   saveWords,
   searchWords,
 } from '../lib/storage.js';
+import { translateWord } from '../lib/translator.js';
 
 const STORAGE_DEVICE_ID = 'deviceId';
 const STORAGE_SYNC_QUEUE = 'syncQueue';
@@ -58,10 +59,13 @@ async function handleMessage(message) {
     case 'DELETE_WORD':
       return handleDeleteWord(message.id || message.wordId);
     case 'GET_WORDS':
+      await syncForRead();
       return { words: await searchWords(message.query || '') };
     case 'GET_BOOKS':
+      await syncForRead();
       return { books: await getBooks() };
     case 'GET_BOOK_WORDS':
+      await syncForRead();
       return { words: await getWordsByBook(message.bookId, message.query || '') };
     case 'EXPORT_WORDS':
       return handleExportWords(message.format || 'json');
@@ -82,6 +86,8 @@ async function handleMessage(message) {
       return handleAuthLogout();
     case 'AUTH_STATUS':
       return handleAuthStatus();
+    case 'TRANSLATE':
+      return handleTranslate(message.word);
     case 'PING':
       return { pong: true };
     default:
@@ -94,20 +100,47 @@ async function handleSaveWord(entry) {
     throw new Error('单词内容不能为空');
   }
 
+  const auth = await getAuthData();
+  const settings = await getSettings();
+  
+  // 检查是否启用了同步且已登录
+  const syncEnabled = settings.syncEnabled !== false;
+  const isLoggedIn = Boolean(auth?.accessToken && auth?.refreshToken);
+
+  // 如果启用了同步但未登录，提示用户
+  if (syncEnabled && !isLoggedIn) {
+    throw new Error('请先登录才能添加单词');
+  }
+
+  // 登录后先拉取一次远端单词本，确保新增单词能直接落到当前同步单词本中。
+  if (isLoggedIn) {
+    await syncForRead(settings);
+  }
+
   const existingWords = await getWords();
   const duplicate = existingWords.some(
     (item) => String(item?.word || '').toLowerCase() === String(entry.word || '').toLowerCase()
   );
 
   const result = await addWord(entry);
-  await enqueueSyncEntry(result.entry || entry);
-  const sync = await flushSyncQueue(await getSettings());
+  
+  // 只有在已登录时才尝试同步
+  if (isLoggedIn) {
+    await enqueueSyncEntry(result.entry || entry);
+    const sync = await flushSyncQueue(settings);
+    return {
+      saved: Boolean(result.success),
+      duplicate,
+      entry: result.entry,
+      sync,
+    };
+  }
 
   return {
     saved: Boolean(result.success),
     duplicate,
     entry: result.entry,
-    sync,
+    sync: { ok: false, skipped: true, queueSize: 0 },
   };
 }
 
@@ -240,13 +273,15 @@ async function enqueueSyncEntry(entry) {
   if (!entry?.word) {
     return;
   }
+
   const queue = await getSyncQueue();
-  const entryId = entry.id || entry._legacy?.id || `${entry.word}-${entry.timeAdded || Date.now()}`;
-  const exists = queue.some((item) => (item.id || item._legacy?.id) === entryId);
-  if (exists) {
-    return;
-  }
-  await setSyncQueue([{ ...entry, id: entryId }, ...queue].slice(0, 500));
+  const nextEntry = {
+    ...entry,
+    id: entry.id || entry._legacy?.id || `${entry.word}-${entry.timeAdded || Date.now()}`,
+  };
+  const nextKey = getQueuedWordKey(nextEntry);
+  const dedupedQueue = queue.filter((item) => getQueuedWordKey(item) !== nextKey);
+  await setSyncQueue([nextEntry, ...dedupedQueue].slice(0, 500));
 }
 
 async function enqueueDelete(wordId) {
@@ -264,6 +299,32 @@ function normalizeBaseUrl(settings, auth) {
   }
   const settingsBaseUrl = typeof settings?.syncBaseUrl === 'string' ? settings.syncBaseUrl.trim() : '';
   return (settingsBaseUrl || 'http://localhost:3001').replace(/\/+$/, '');
+}
+
+function normalizeWordValue(word) {
+  return String(word || '').trim().toLowerCase();
+}
+
+function normalizeBookValue(bookId) {
+  const trimmed = String(bookId || '').trim();
+  return trimmed || '__sync_book__';
+}
+
+function getQueuedWordKey(entry) {
+  return `${normalizeWordValue(entry?.word)}::${normalizeBookValue(entry?.bookId)}`;
+}
+
+async function syncForRead(settingsOverride) {
+  const auth = await getAuthData();
+  if (!auth?.accessToken || !auth?.refreshToken) {
+    return;
+  }
+  if (isSyncing) {
+    return;
+  }
+
+  const settings = settingsOverride || (await getSettings());
+  await flushSyncQueue(settings);
 }
 
 async function pullChanges(auth, settings) {
@@ -300,6 +361,22 @@ function mapServerBookToLocal(book) {
     createdAt: Date.parse(book.created_at) || Date.now(),
     updatedAt: Date.parse(book.updated_at) || Date.now(),
   };
+}
+
+function selectPreferredSyncBook(books) {
+  return [...books]
+    .filter((book) => book?.isSync)
+    .sort((left, right) => {
+      const leftIsDefault = left.name === '默认';
+      const rightIsDefault = right.name === '默认';
+      if (leftIsDefault !== rightIsDefault) {
+        return leftIsDefault ? 1 : -1;
+      }
+
+      const leftUpdated = Number(left.updatedAt) || Number(left.createdAt) || 0;
+      const rightUpdated = Number(right.updatedAt) || Number(right.createdAt) || 0;
+      return rightUpdated - leftUpdated;
+    })[0] || null;
 }
 
 function mapServerWordToLocal(word) {
@@ -399,11 +476,62 @@ async function pushWords(auth, settings) {
   }
 
   const baseUrl = normalizeBaseUrl(settings, auth);
-  const payload = syncQueue.map(mapLocalWordToServer).filter((item) => item.book_id);
-  if (payload.length === 0) {
-    await setSyncQueue([]);
-    return { ok: true, processed: 0 };
+
+  // 从缓存的单词本中查找同步单词本，为缺少 bookId 的条目自动分配
+  let syncBook = null;
+  const cachedBooks = await getBooks();
+  syncBook = selectPreferredSyncBook(cachedBooks);
+
+  // 如果缓存中没有同步单词本，尝试从服务器获取
+  if (!syncBook) {
+    try {
+      const booksRes = await fetch(`${baseUrl}/api/v1/books`, {
+        headers: { Authorization: `Bearer ${auth.accessToken}` },
+      });
+      if (booksRes.ok) {
+        const serverBooks = await booksRes.json();
+        const serverSyncBook = Array.isArray(serverBooks)
+          ? serverBooks.find((b) => b.is_sync)
+          : null;
+        if (serverSyncBook) {
+          syncBook = { id: serverSyncBook.id, isSync: true };
+          // 同时更新本地缓存
+          await saveBooks(serverBooks.map(mapServerBookToLocal));
+        }
+      }
+    } catch (err) {
+      console.warn('[pushWords] 无法从服务器获取单词本:', err.message);
+    }
   }
+
+  const payload = syncQueue
+    .map((item) => {
+      const mapped = mapLocalWordToServer(item);
+      const bookId = mapped.book_id;
+      // 自动分配 book_id：如果未设置或是无效值，使用缓存中的同步单词本 ID
+      if ((!bookId || bookId === 'local_default_book' || bookId.length < 10) && syncBook) {
+        mapped.book_id = syncBook.id;
+      }
+      return mapped;
+    })
+    .filter((item) => typeof item.book_id === 'string' && item.book_id.length > 20)
+    .reduce((list, item) => {
+      const key = `${normalizeWordValue(item.word)}::${normalizeBookValue(item.book_id)}`;
+      const index = list.findIndex((candidate) => `${normalizeWordValue(candidate.word)}::${normalizeBookValue(candidate.book_id)}` === key);
+      if (index === -1) {
+        list.push(item);
+      } else {
+        list[index] = item;
+      }
+      return list;
+    }, []); // 合并同一单词/单词本的重复推送，避免服务端 upsert 冲突。
+
+  if (payload.length === 0) {
+    console.warn('[pushWords] 无法同步单词：没有可用的 book_id，已缓存待下次同步');
+    return { ok: false, error: 'no_book_id', queueSize: syncQueue.length };
+  }
+
+  console.log(`[pushWords] 准备同步 ${payload.length} 个单词，book_id: ${payload[0]?.book_id}`);
 
   const response = await fetch(`${baseUrl}/api/v1/words/batch`, {
     method: 'POST',
@@ -422,7 +550,21 @@ async function pushWords(auth, settings) {
     throw new Error(text || 'word_sync_failed');
   }
 
-  await setSyncQueue([]);
+  // 只清除已成功同步的词条
+  const syncedWordKeys = new Set(
+    payload.map((item) => `${normalizeWordValue(item.word)}::${normalizeBookValue(item.book_id)}`)
+  );
+  if (syncedWordKeys.size > 0) {
+    await setSyncQueue(
+      syncQueue.filter((item) => {
+        const bookId = item.bookId || syncBook?.id || '';
+        const key = `${normalizeWordValue(item.word)}::${normalizeBookValue(bookId)}`;
+        return !syncedWordKeys.has(key);
+      })
+    );
+    console.log(`[pushWords] 同步完成，清除 ${syncedWordKeys.size} 条，队列剩余 ${Math.max(0, syncQueue.length - syncedWordKeys.size)} 条`);
+  }
+
   return { ok: true, processed: payload.length };
 }
 
@@ -442,9 +584,9 @@ async function flushSyncQueue(settings) {
     let currentAuth = auth;
 
     try {
-      await pullChanges(currentAuth, settings);
       await pushDeletes(currentAuth, settings);
       await pushWords(currentAuth, settings);
+      await pullChanges(currentAuth, settings);
     } catch (error) {
       if (String(error?.message || error) !== 'unauthorized') {
         throw error;
@@ -464,12 +606,10 @@ async function flushSyncQueue(settings) {
       };
       await setAuthData({ ...currentAuth, lastSyncAt: Date.now() });
 
-      await pullChanges(currentAuth, settings);
       await pushDeletes(currentAuth, settings);
       await pushWords(currentAuth, settings);
+      await pullChanges(currentAuth, settings);
     }
-
-    await pullChanges(currentAuth, settings);
     await setAuthData({ ...currentAuth, lastSyncAt: Date.now() });
 
     return {
@@ -498,10 +638,44 @@ async function setAuthData(auth) {
   await chrome.storage.local.set({ [STORAGE_AUTH]: auth });
 }
 
+// 存储当前登录用户的唯一标识（用于检测用户切换）
+const STORAGE_CURRENT_USER_EMAIL = 'currentUserEmail';
+
+async function getCurrentUserEmail() {
+  const data = await chrome.storage.local.get([STORAGE_CURRENT_USER_EMAIL]);
+  return data[STORAGE_CURRENT_USER_EMAIL] || null;
+}
+
+async function setCurrentUserEmail(email) {
+  await chrome.storage.local.set({ [STORAGE_CURRENT_USER_EMAIL]: email });
+}
+
+// 清空用户数据（在切换用户或登出时调用）
+async function clearUserData() {
+  await chrome.storage.local.remove([
+    'words',
+    'books',
+    'syncQueue',
+    'deleteQueue',
+    STORAGE_SYNC_QUEUE,
+    STORAGE_DELETE_QUEUE,
+  ]);
+}
+
 async function handleAuthLogin(email, password, baseUrl) {
   const normalizedUrl = (baseUrl || 'http://localhost:3001').trim().replace(/\/+$/, '');
   const result = await doLoginOrRegister(normalizedUrl, 'login', email, password);
+  
   if (result.ok && result.accessToken && result.refreshToken) {
+    const previousEmail = await getCurrentUserEmail();
+    const newEmail = result.user?.email || email;
+    
+    // 如果用户切换了账号，清空旧数据
+    if (previousEmail && previousEmail !== newEmail) {
+      await clearUserData();
+    }
+    
+    await setCurrentUserEmail(newEmail);
     await setAuthData({
       accessToken: result.accessToken,
       refreshToken: result.refreshToken,
@@ -510,6 +684,7 @@ async function handleAuthLogin(email, password, baseUrl) {
       lastSyncAt: Date.now(),
     });
     await setupAlarms();
+    // 立即拉取新用户的数据
     await flushSyncQueue(await getSettings());
   }
   return result;
@@ -518,7 +693,17 @@ async function handleAuthLogin(email, password, baseUrl) {
 async function handleAuthRegister(email, password, baseUrl) {
   const normalizedUrl = (baseUrl || 'http://localhost:3001').trim().replace(/\/+$/, '');
   const result = await doLoginOrRegister(normalizedUrl, 'register', email, password);
+  
   if (result.ok && result.accessToken && result.refreshToken) {
+    const previousEmail = await getCurrentUserEmail();
+    const newEmail = result.user?.email || email;
+    
+    // 如果用户切换了账号，清空旧数据
+    if (previousEmail && previousEmail !== newEmail) {
+      await clearUserData();
+    }
+    
+    await setCurrentUserEmail(newEmail);
     await setAuthData({
       accessToken: result.accessToken,
       refreshToken: result.refreshToken,
@@ -527,6 +712,7 @@ async function handleAuthRegister(email, password, baseUrl) {
       lastSyncAt: Date.now(),
     });
     await setupAlarms();
+    // 立即拉取新用户的数据
     await flushSyncQueue(await getSettings());
   }
   return result;
@@ -534,6 +720,9 @@ async function handleAuthRegister(email, password, baseUrl) {
 
 async function handleAuthLogout() {
   await setAuthData(null);
+  await setCurrentUserEmail(null);
+  // 登出时清空数据，但注意不要清空设置
+  await clearUserData();
   return { ok: true };
 }
 
@@ -616,4 +805,13 @@ async function doRefreshToken(baseUrl, refreshToken) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function handleTranslate(word) {
+  if (!word || !word.trim()) {
+    throw new Error('待翻译单词不能为空');
+  }
+  const settings = await getSettings();
+  const translation = await translateWord(word, settings);
+  return { translation };
 }
