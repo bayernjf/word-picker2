@@ -30,6 +30,7 @@ async function loadSettings() {
     form.autoSpeak.checked = Boolean(settings.autoSpeak);
     form.maxCacheSize.value = settings.maxCacheSize || 200;
     form.syncEnabled.checked = settings.syncEnabled !== false;
+    form.rememberDevice7Days.checked = Boolean(settings.rememberDevice7Days);
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "加载设置失败");
   }
@@ -123,7 +124,8 @@ async function handleSubmit(event) {
     autoSpeak: form.autoSpeak.checked,
     maxCacheSize: clampNumber(form.maxCacheSize.value, 50, 500, 200),
     syncEnabled: form.syncEnabled.checked,
-    syncBaseUrl: String(form.syncBaseUrl.value || "").trim() || "http://localhost:3001"
+    rememberDevice7Days: form.rememberDevice7Days.checked,
+    syncBaseUrl: String(form.syncBaseUrl?.value || "").trim() || "http://localhost:3001"
   };
 
   try {
