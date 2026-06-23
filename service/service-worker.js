@@ -12,6 +12,13 @@ import {
   searchWords,
 } from '../lib/storage.js';
 import { translateWord } from '../lib/translator.js';
+import {
+  selectPreferredSyncBook,
+  normalizeContextValue,
+  normalizeSourceLinkValue,
+} from '../lib/utils.js';
+import { DEFAULT_SYNC_BASE_URL } from '../lib/constants.js';
+import { MESSAGE_TYPES } from '../lib/messaging.js';
 
 const STORAGE_DEVICE_ID = 'deviceId';
 const STORAGE_SYNC_QUEUE = 'syncQueue';
@@ -54,41 +61,41 @@ async function handleMessage(message) {
   await ensureDefaults();
 
   switch (message?.type) {
-    case 'SAVE_WORD':
+    case MESSAGE_TYPES.SAVE_WORD:
       return handleSaveWord(message.entry || message.word);
-    case 'DELETE_WORD':
+    case MESSAGE_TYPES.DELETE_WORD:
       return handleDeleteWord(message.id || message.wordId);
-    case 'GET_WORDS':
+    case MESSAGE_TYPES.GET_WORDS:
       await syncForRead();
       return { words: await searchWords(message.query || '') };
-    case 'GET_BOOKS':
+    case MESSAGE_TYPES.GET_BOOKS:
       await syncForRead();
       return { books: await getBooks() };
-    case 'GET_BOOK_WORDS':
+    case MESSAGE_TYPES.GET_BOOK_WORDS:
       await syncForRead();
       return { words: await getWordsByBook(message.bookId, message.query || '') };
-    case 'EXPORT_WORDS':
+    case MESSAGE_TYPES.EXPORT_WORDS:
       return handleExportWords(message.format || 'json');
-    case 'GET_SETTINGS':
+    case MESSAGE_TYPES.GET_SETTINGS:
       return { settings: await getSettings() };
-    case 'SAVE_SETTINGS':
+    case MESSAGE_TYPES.SAVE_SETTINGS:
       return { settings: await saveSettings(message.settings || {}) };
-    case 'SYNC_NOW':
-    case 'TRIGGER_SYNC':
+    case MESSAGE_TYPES.SYNC_NOW:
+    case MESSAGE_TYPES.TRIGGER_SYNC:
       return { sync: await handleSyncNow() };
-    case 'GET_SYNC_STATUS':
+    case MESSAGE_TYPES.GET_SYNC_STATUS:
       return handleGetSyncStatus();
-    case 'AUTH_LOGIN':
+    case MESSAGE_TYPES.AUTH_LOGIN:
       return handleAuthLogin(message.email, message.password, message.baseUrl);
-    case 'AUTH_REGISTER':
+    case MESSAGE_TYPES.AUTH_REGISTER:
       return handleAuthRegister(message.email, message.password, message.baseUrl);
-    case 'AUTH_LOGOUT':
+    case MESSAGE_TYPES.AUTH_LOGOUT:
       return handleAuthLogout();
-    case 'AUTH_STATUS':
+    case MESSAGE_TYPES.AUTH_STATUS:
       return handleAuthStatus();
-    case 'TRANSLATE':
+    case MESSAGE_TYPES.TRANSLATE:
       return handleTranslate(message.word);
-    case 'PING':
+    case MESSAGE_TYPES.PING:
       return { pong: true };
     default:
       throw new Error(`未知消息类型：${message?.type || 'EMPTY'}`);
@@ -331,19 +338,11 @@ function normalizeBaseUrl(settings, auth) {
     return authBaseUrl.replace(/\/+$/, '');
   }
   const settingsBaseUrl = typeof settings?.syncBaseUrl === 'string' ? settings.syncBaseUrl.trim() : '';
-  return (settingsBaseUrl || 'http://localhost:3001').replace(/\/+$/, '');
+  return (settingsBaseUrl || DEFAULT_SYNC_BASE_URL).replace(/\/+$/, '');
 }
 
 function normalizeWordValue(word) {
   return String(word || '').trim().toLowerCase();
-}
-
-function normalizeContextValue(context) {
-  return String(context || '').trim().replace(/\s+/g, ' ');
-}
-
-function normalizeSourceLinkValue(context) {
-  return String(context?.sourceLink || context?.source_link || context?.sourceUrl || context?.source_url || '').trim();
 }
 
 function normalizeBookValue(bookId) {
@@ -402,22 +401,6 @@ function mapServerBookToLocal(book) {
     createdAt: Date.parse(book.created_at) || Date.now(),
     updatedAt: Date.parse(book.updated_at) || Date.now(),
   };
-}
-
-function selectPreferredSyncBook(books) {
-  return [...books]
-    .filter((book) => book?.isSync)
-    .sort((left, right) => {
-      const leftIsDefault = left.name === '默认';
-      const rightIsDefault = right.name === '默认';
-      if (leftIsDefault !== rightIsDefault) {
-        return leftIsDefault ? 1 : -1;
-      }
-
-      const leftUpdated = Number(left.updatedAt) || Number(left.createdAt) || 0;
-      const rightUpdated = Number(right.updatedAt) || Number(right.createdAt) || 0;
-      return rightUpdated - leftUpdated;
-    })[0] || null;
 }
 
 function mapServerWordToLocal(word) {

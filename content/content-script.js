@@ -1,4 +1,6 @@
 (() => {
+  const { escapeHtml, sendMessage } = window.__WordCatcherShared;
+
   const STATE = {
     IDLE: "idle",
     PEN: "pen",
@@ -53,7 +55,8 @@
         ...DEFAULT_SETTINGS,
         ...(response.settings || {})
       };
-    } catch (_error) {
+    } catch (error) {
+      console.warn("[WordCatcher] 加载设置失败，使用默认设置：", error);
       settings = { ...DEFAULT_SETTINGS };
     }
   }
@@ -814,8 +817,8 @@
     window.setTimeout(() => {
       try {
         closePopupAndReset();
-      } catch (_error) {
-        // ignore
+      } catch (error) {
+        console.warn("[WordCatcher] 关闭弹窗时出现异常：", error);
       }
     }, 0);
   }
@@ -858,31 +861,6 @@
       clearTimeout(hoverTimer);
       hoverTimer = null;
     }
-  }
-
-  function escapeHtml(value) {
-    return String(value || "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
-  }
-
-  function sendMessage(message) {
-    return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage(message, (response) => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-          return;
-        }
-        if (!response?.success) {
-          reject(new Error(response?.error || "扩展消息请求失败"));
-          return;
-        }
-        resolve(response);
-      });
-    });
   }
 
   const POPUP_CSS = `

@@ -1,3 +1,5 @@
+import { escapeHtml, sendMessage, formatDate } from "../lib/utils.js";
+
 const searchInput = document.getElementById("search-input");
 const wordList = document.getElementById("word-list");
 const statusNode = document.getElementById("status");
@@ -210,44 +212,6 @@ function setStatus(message) {
   statusNode.textContent = message;
 }
 
-function truncate(value, maxLength) {
-  if (value.length <= maxLength) {
-    return value;
-  }
-  return `${value.slice(0, maxLength - 1)}...`;
-}
-
-function formatDate(timeValue) {
-  if (!timeValue) {
-    return "未知";
-  }
-  let date;
-  if (typeof timeValue === "number") {
-    date = new Date(timeValue);
-  } else if (typeof timeValue === "string") {
-    date = new Date(timeValue);
-  } else {
-    return "未知";
-  }
-  
-  if (isNaN(date.getTime())) {
-    return "未知";
-  }
-  
-  return date.toLocaleString("zh-CN", {
-    hour12: false
-  });
-}
-
-function escapeHtml(value) {
-  return String(value || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
 // 检查登录状态并渲染相应界面
 async function checkAuthAndRender() {
   try {
@@ -269,6 +233,7 @@ async function checkAuthAndRender() {
     }
   } catch (error) {
     // 出错时默认显示登录提示
+    console.warn("[WordCatcher] 检查登录状态失败：", error);
     const authRequired = document.getElementById('auth-required');
     const mainContent = document.getElementById('main-content');
     authRequired.style.display = 'block';
@@ -276,18 +241,3 @@ async function checkAuthAndRender() {
   }
 }
 
-function sendMessage(message) {
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage(message, (response) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-      if (!response?.success) {
-        reject(new Error(response?.error || "扩展消息请求失败"));
-        return;
-      }
-      resolve(response);
-    });
-  });
-}

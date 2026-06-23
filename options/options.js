@@ -1,3 +1,6 @@
+import { sendMessage, clampNumber } from "../lib/utils.js";
+import { DEFAULT_SYNC_BASE_URL, SETTINGS_LIMITS } from "../lib/constants.js";
+
 const form = document.getElementById("settings-form");
 const statusNode = document.getElementById("status");
 const syncStatusNode = document.getElementById("sync-status");
@@ -47,7 +50,8 @@ async function refreshAuthStatus() {
       authLoggedOut.style.display = "block";
       authLoggedIn.style.display = "none";
     }
-  } catch {
+  } catch (error) {
+    console.warn("[WordCatcher] 获取登录状态失败：", error);
     authLoggedOut.style.display = "block";
     authLoggedIn.style.display = "none";
   }
@@ -56,7 +60,7 @@ async function refreshAuthStatus() {
 async function handleAuthLogin() {
   const email = String(form.authEmail.value || "").trim().toLowerCase();
   const password = String(form.authPassword.value || "");
-  const baseUrl = "http://localhost:3001";
+  const baseUrl = DEFAULT_SYNC_BASE_URL;
   if (!email || !password) {
     setStatus("请填写邮箱和密码");
     return;
@@ -79,7 +83,7 @@ async function handleAuthLogin() {
 async function handleAuthRegister() {
   const email = String(form.authEmail.value || "").trim().toLowerCase();
   const password = String(form.authPassword.value || "");
-  const baseUrl = "http://localhost:3001";
+  const baseUrl = DEFAULT_SYNC_BASE_URL;
   if (!email || !password) {
     setStatus("请填写邮箱和密码");
     return;
@@ -119,13 +123,13 @@ async function handleSubmit(event) {
 
   const payload = {
     lookupKey: form.lookupKey.value,
-    hoverDelay: clampNumber(form.hoverDelay.value, 100, 1500, 100),
+    hoverDelay: clampNumber(form.hoverDelay.value, SETTINGS_LIMITS.HOVER_DELAY_MIN, SETTINGS_LIMITS.HOVER_DELAY_MAX, SETTINGS_LIMITS.HOVER_DELAY_DEFAULT),
     translator: form.translator.value,
     autoSpeak: form.autoSpeak.checked,
-    maxCacheSize: clampNumber(form.maxCacheSize.value, 50, 500, 200),
+    maxCacheSize: clampNumber(form.maxCacheSize.value, SETTINGS_LIMITS.CACHE_SIZE_MIN, SETTINGS_LIMITS.CACHE_SIZE_MAX, SETTINGS_LIMITS.CACHE_SIZE_DEFAULT),
     syncEnabled: form.syncEnabled.checked,
     rememberDevice7Days: form.rememberDevice7Days.checked,
-    syncBaseUrl: String(form.syncBaseUrl?.value || "").trim() || "http://localhost:3001"
+    syncBaseUrl: String(form.syncBaseUrl?.value || "").trim() || DEFAULT_SYNC_BASE_URL
   };
 
   try {
@@ -173,37 +177,14 @@ async function refreshSyncStatus() {
         syncStatusNode.textContent = `请先登录账号以启用同步 ｜ 同步队列：${queueSize} 条 ｜ 设备：${deviceId}`;
       }
     }
-  } catch {
+  } catch (error) {
+    console.warn("[WordCatcher] 获取同步状态失败：", error);
     if (syncStatusNode) {
       syncStatusNode.textContent = "";
     }
   }
 }
 
-function clampNumber(value, min, max, fallback) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) {
-    return fallback;
-  }
-  return Math.max(min, Math.min(max, parsed));
-}
-
 function setStatus(message) {
   statusNode.textContent = message;
-}
-
-function sendMessage(message) {
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage(message, (response) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-      if (!response?.success) {
-        reject(new Error(response?.error || "扩展消息请求失败"));
-        return;
-      }
-      resolve(response);
-    });
-  });
 }
