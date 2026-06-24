@@ -42,6 +42,7 @@ async function loadSettings() {
     form.lookupKey.value = settings.lookupKey || "Control";
     form.hoverDelay.value = settings.hoverDelay || 100;
     form.translator.value = settings.translator || "free";
+    form.useYoudaoDict.checked = settings.useYoudaoDict !== false;
     form.autoSpeak.checked = Boolean(settings.autoSpeak);
     form.maxCacheSize.value = settings.maxCacheSize || 200;
     form.syncEnabled.checked = settings.syncEnabled !== false;
@@ -159,6 +160,7 @@ async function handleSubmit(event) {
     lookupKey: form.lookupKey.value,
     hoverDelay: clampNumber(form.hoverDelay.value, SETTINGS_LIMITS.HOVER_DELAY_MIN, SETTINGS_LIMITS.HOVER_DELAY_MAX, SETTINGS_LIMITS.HOVER_DELAY_DEFAULT),
     translator: form.translator.value,
+    useYoudaoDict: form.useYoudaoDict.checked,
     autoSpeak: form.autoSpeak.checked,
     maxCacheSize: clampNumber(form.maxCacheSize.value, SETTINGS_LIMITS.CACHE_SIZE_MIN, SETTINGS_LIMITS.CACHE_SIZE_MAX, SETTINGS_LIMITS.CACHE_SIZE_DEFAULT),
     syncEnabled: form.syncEnabled.checked,
