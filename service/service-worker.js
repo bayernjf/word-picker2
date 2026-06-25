@@ -14,6 +14,7 @@ import {
   searchWords,
 } from '../lib/storage.js';
 import { translateWord } from '../lib/translator.js';
+import { ensureDictImported, lookupOffline } from '../lib/offlineDict.js';
 import {
   selectPreferredSyncBook,
   normalizeContextValue,
@@ -32,11 +33,13 @@ let isSyncing = false;
 chrome.runtime.onInstalled.addListener(() => {
   void ensureDefaults();
   void setupAlarms();
+  void ensureDictImported();
 });
 
 chrome.runtime.onStartup?.addListener(() => {
   void ensureDefaults();
   void setupAlarms();
+  void ensureDictImported();
 });
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
@@ -128,9 +131,13 @@ async function handleSaveWord(entry) {
     throw new Error('请先登录才能添加单词');
   }
 
-  // 登录后先拉取一次远端单词本，确保新增单词能直接落到当前同步单词本中。
+  // 仅当本地尚无任何单词本时，才同步拉取一次（首次冷启动需要拿到同步单词本 ID）。
+  // 之后的保存不再被「保存前全量拉取」阻塞，避免每次添加都等一次网络往返。
   if (isLoggedIn) {
-    await syncForRead(settings);
+    const localBooks = await getBooks();
+    if (!Array.isArray(localBooks) || localBooks.length === 0) {
+      await syncForRead(settings);
+    }
   }
 
   const existingWords = await getWords();
@@ -173,15 +180,19 @@ async function handleSaveWord(entry) {
     };
   }
   
-  // 只有在已登录时才尝试同步
+  // 只有在已登录时才尝试同步：本地已写入成功，远端推送放到后台异步进行，
+  // 不阻塞「添加成功」提示。词条已入队并持久化，后台失败也会在后续同步重试。
   if (isLoggedIn) {
     await enqueueSyncEntry(result.entry || entry);
-    const sync = await flushSyncQueue(settings);
+    // 不 await：后台 flush，失败不影响本地结果与用户提示
+    flushSyncQueue(settings).catch((error) => {
+      console.warn('[handleSaveWord] 后台同步失败，已入队待重试：', error);
+    });
     return {
       saved: Boolean(result.success),
       duplicate,
       entry: result.entry,
-      sync,
+      sync: { ok: true, queued: true, queueSize: (await getSyncQueue()).length },
     };
   }
 
@@ -472,7 +483,7 @@ function mapLocalWordToServer(word) {
     contexts: Array.isArray(word.contexts) ? word.contexts : [],
     phonetic: word._legacy?.phonetic || '',
     part_of_speech: '',
-    definition: word.translation || '',
+    definition: '',
     chinese_translation: word.translation || '',
     synonyms: [],
     examples:
@@ -979,10 +990,20 @@ async function handleTranslate(word) {
     return { translation: cached.translation, fromCache: true };
   }
 
-  // 2. 未命中才走网络翻译
+  // 2. 查内置离线词库（IndexedDB，高频词秒回，无需联网）
+  await ensureDictImported();
+  const offline = await lookupOffline(word);
+  if (offline) {
+    cache[cacheKey] = { translation: offline, lastAccess: Date.now() };
+    pruneCache(cache, settings.maxCacheSize || 200);
+    await saveCacheMap(cache);
+    return { translation: offline, fromOffline: true };
+  }
+
+  // 3. 仍未命中才走网络翻译（生僻词/词组兜底）
   const translation = await translateWord(word, settings);
 
-  // 3. 写回缓存（仅缓存有效结果，兜底结果不缓存以便后续重试）
+  // 4. 写回缓存（仅缓存有效结果，兜底结果不缓存以便后续重试）
   if (translation && translation.provider !== 'fallback') {
     cache[cacheKey] = { translation, lastAccess: Date.now() };
     pruneCache(cache, settings.maxCacheSize || 200);
