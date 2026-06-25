@@ -754,6 +754,51 @@
     }, 1400);
   }
 
+  // 序列化 DOM 节点为 XPath（用于精确定位回原文）
+  function getElementXPath(element) {
+    if (!element) return '';
+    if (element.id) return `//*[@id="${CSS.escape(element.id)}"]`;
+    const path = [];
+    while (element && element.nodeType === Node.ELEMENT_NODE) {
+      let index = 1;
+      for (let sibling = element.previousSibling; sibling; sibling = sibling.previousSibling) {
+        if (sibling.nodeType === Node.ELEMENT_NODE && sibling.nodeName === element.nodeName) {
+          index++;
+        }
+      }
+      path.unshift(`${element.nodeName.toLowerCase()}[${index}]`);
+      element = element.parentNode;
+    }
+    return '/' + path.join('/');
+  }
+
+  function getNodeXPath(node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const parentXPath = getElementXPath(node.parentNode);
+      const textNodes = [...node.parentNode.childNodes].filter(n => n.nodeType === Node.TEXT_NODE);
+      const textIndex = textNodes.indexOf(node) + 1;
+      return `${parentXPath}/text()[${textIndex}]`;
+    }
+    return getElementXPath(node);
+  }
+
+  function serializeRange(node, start, end) {
+    const xpath = getNodeXPath(node);
+    return {
+      startXPath: xpath,
+      startOffset: start,
+      endXPath: xpath,
+      endOffset: end
+    };
+  }
+
+  function buildTextFragmentUrl(baseUrl, text) {
+    const cleanUrl = baseUrl.split('#')[0];
+    const maxLen = 80;
+    const fragment = text.length > maxLen ? text.slice(0, maxLen) : text;
+    return `${cleanUrl}#:~:text=${encodeURIComponent(fragment)}`;
+  }
+
   function buildWordEntry(lookup) {
     const sentence = extractSentenceFromDetection(lookup);
     const now = Date.now();
@@ -761,10 +806,15 @@
     // 构建上下文对象
     const contexts = [];
     if (sentence) {
+      const sourceLink = buildTextFragmentUrl(window.location.href, sentence);
+      const sourceRange = lookup.node
+        ? serializeRange(lookup.node, lookup.start, lookup.end)
+        : undefined;
       contexts.push({
         context: sentence,
         timeAdded: now,
-        sourceLink: window.location.href,
+        sourceLink,
+        sourceRange,
         translation: ""
       });
     }
