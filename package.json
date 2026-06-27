@@ -1,0 +1,24 @@
+{
+  "name": "wordcatcher",
+  "version": "1.0.0",
+  "description": "按住 Ctrl/Cmd 悬停查词，一键收录到单词本的浏览器扩展。",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build:dict": "node scripts/build-dict.js --limit=50000",
+    "pack": "node scripts/pack.js",
+    "release": "npm run build:dict && npm run pack"
+  },
+  "author": "Trae GPT-5.4",
+  "license": "MIT",
+  "devDependencies": {
+    "@eslint/js": "^9.13.0",
+    "eslint": "^9.13.0",
+    "globals": "^15.11.0",
+    "vitest": "^2.1.3"
+  }
+}

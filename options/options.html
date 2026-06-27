@@ -121,6 +121,11 @@
         </div>
 
         <div class="field checkbox">
+          <input id="useYoudaoDict" name="useYoudaoDict" type="checkbox" />
+          <label for="useYoudaoDict">使用有道词典（提供中文释义，开发期接口，非官方授权）</label>
+        </div>
+
+        <div class="field checkbox">
           <input id="autoSpeak" name="autoSpeak" type="checkbox" />
           <label for="autoSpeak">查词后自动朗读</label>
         </div>
@@ -145,7 +150,7 @@
               <label for="authPassword">密码</label>
               <input id="authPassword" name="authPassword" type="password" placeholder="至少6个字符" />
             </div>
-            <div style="display:flex; gap: 12px; flex-wrap: wrap;">
+            <div style="display:flex; gap: 12px; flex-wrap: wrap; margin-top: 20px;">
               <button type="button" id="auth-login" style="background:#1f6feb;">登录</button>
               <button type="button" id="auth-register" style="background:#8957e5;">注册</button>
             </div>
@@ -155,11 +160,16 @@
               <label>已登录</label>
               <div id="auth-user-info"></div>
             </div>
-            <div style="display:flex; gap: 12px; flex-wrap: wrap;">
+            <div style="display:flex; gap: 12px; flex-wrap: wrap; margin-top: 20px;">
               <button type="button" id="auth-logout" style="background:#f85149;">退出登录</button>
               <button type="button" id="sync-now" style="background:#1f6feb;">立即同步</button>
             </div>
           </div>
+        </div>
+
+        <div class="field checkbox">
+          <input id="rememberDevice7Days" name="rememberDevice7Days" type="checkbox" />
+          <label for="rememberDevice7Days">在此设备记住7天</label>
         </div>
 
         <div style="display:flex; gap: 12px; flex-wrap: wrap; margin-top: 24px;">
