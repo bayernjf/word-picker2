@@ -1,4 +1,13 @@
 (() => {
+  const _logger = {
+    debug: (...args) => console.debug(`[${new Date().toLocaleTimeString('zh-CN',{hour12:false})}] [content-script] [DEBUG]`, ...args),
+    info: (...args) => console.info(`[${new Date().toLocaleTimeString('zh-CN',{hour12:false})}] [content-script] [INFO]`, ...args),
+    warn: (...args) => console.warn(`[${new Date().toLocaleTimeString('zh-CN',{hour12:false})}] [content-script] [WARN]`, ...args),
+    error: (...args) => console.error(`[${new Date().toLocaleTimeString('zh-CN',{hour12:false})}] [content-script] [ERROR]`, ...args),
+  };
+
+  const { escapeHtml, sendMessage } = window.__WordCatcherShared;
+
   const STATE = {
     IDLE: "idle",
     PEN: "pen",
@@ -15,6 +24,8 @@
   const WORD_PATTERN = /[A-Za-z][A-Za-z'-]{1,44}/g;
   const EXCLUDED_SELECTOR = "input, textarea, [contenteditable='true'], [contenteditable=''], pre, code";
   const CURSOR_STYLE_ID = "word-catcher-cursor-style";
+  const HIGHLIGHT_STYLE_ID = "word-catcher-highlight-style";
+  const HIGHLIGHT_NAME = "word-catcher-hover";
   const POPUP_WIDTH = 320;
   const PEN_CURSOR_DATA_URL =
     "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cpath fill='%234472C4' d='M19.73 5.33a2 2 0 0 0-2.83 0l-1.42 1.42 4.24 4.24 1.42-1.42a2 2 0 0 0 0-2.83l-1.41-1.41Z'/%3E%3Cpath fill='%23FFFFFF' d='m14.07 8.1 4.24 4.24-8.84 8.84-4.98 1.13 1.13-4.98 8.45-8.45Z'/%3E%3Cpath fill='%231F2A44' d='m6.54 17.99 1.47-1.47 1.94 1.94-1.48 1.47-1.93.44.44-1.93Z'/%3E%3C/g%3E%3C/svg%3E";
@@ -36,6 +47,7 @@
   let lookupKeyPressed = false;
   let isUpdatingPopup = false;
   let pendingPopupFocus = false;
+  let wordHighlight = null;
 
   const KEYDOWN_POPUP_DELAY_MS = 100;
 
@@ -53,7 +65,8 @@
         ...DEFAULT_SETTINGS,
         ...(response.settings || {})
       };
-    } catch (_error) {
+    } catch (error) {
+      _logger.warn("加载设置失败，使用默认设置：", error);
       settings = { ...DEFAULT_SETTINGS };
     }
   }
@@ -164,6 +177,7 @@
     clearHoverTimer();
     clearKeydownPopupTimer();
     removeCursor();
+    clearWordHighlight();
     if (preservePopup && popupContainer?.isConnected) {
       currentState = currentState === STATE.LOADING ? STATE.LOADING : STATE.SHOWING;
       positionPopup(popupContainer, activeAnchor.x, activeAnchor.y);
@@ -198,6 +212,7 @@
     currentLookup = null;
     currentState = STATE.IDLE;
     removeCursor();
+    clearWordHighlight();
   }
 
   function scheduleInitialLookupAfterKeydown() {
@@ -275,6 +290,9 @@
       return;
     }
 
+    // 即时高亮鼠标指向的单词（独立于弹窗的 hoverDelay，体验更跟手）
+    updateHoverHighlight(event.clientX, event.clientY);
+
     if (currentState !== STATE.PEN && currentState !== STATE.SHOWING && currentState !== STATE.LOADING) {
       return;
     }
@@ -285,6 +303,16 @@
     hoverTimer = window.setTimeout(() => {
       void lookupAtPoint(event.clientX, event.clientY);
     }, delay);
+  }
+
+  // 根据鼠标位置检测单词并即时高亮；未命中单词时清除高亮
+  function updateHoverHighlight(x, y) {
+    const detection = detectWordAtPoint(x, y);
+    if (detection?.node) {
+      highlightWord(detection.node, detection.start, detection.end);
+    } else {
+      clearWordHighlight();
+    }
   }
 
   async function lookupAtPoint(x, y) {
@@ -304,6 +332,7 @@
       return;
     }
 
+    _logger.debug('lookupAtPoint', { word: detection.word, x, y });
     currentLookup = {
       ...detection,
       signature
@@ -325,6 +354,7 @@
 
       const translation = response.translation || buildLoadingData(detection.word);
       currentLookup.translation = translation;
+      _logger.debug('lookupAtPoint translation received', { word: detection.word, provider: translation.provider });
       updatePopup({
         ...translation,
         sentence: extractSentenceFromDetection(detection)
@@ -630,14 +660,14 @@
         return;
       }
 
-      if (response.saved && !response.duplicate) {
-        showToast("添加成功");
+      if (response.duplicate) {
+        showToast("已添加");
         safeClosePopupAndReset();
         return;
       }
 
-      if (response.duplicate) {
-        showToast("已添加");
+      if (response.saved) {
+        showToast("添加成功");
         safeClosePopupAndReset();
         return;
       }
@@ -733,6 +763,51 @@
     }, 1400);
   }
 
+  // 序列化 DOM 节点为 XPath（用于精确定位回原文）
+  function getElementXPath(element) {
+    if (!element) return '';
+    if (element.id) return `//*[@id="${CSS.escape(element.id)}"]`;
+    const path = [];
+    while (element && element.nodeType === Node.ELEMENT_NODE) {
+      let index = 1;
+      for (let sibling = element.previousSibling; sibling; sibling = sibling.previousSibling) {
+        if (sibling.nodeType === Node.ELEMENT_NODE && sibling.nodeName === element.nodeName) {
+          index++;
+        }
+      }
+      path.unshift(`${element.nodeName.toLowerCase()}[${index}]`);
+      element = element.parentNode;
+    }
+    return '/' + path.join('/');
+  }
+
+  function getNodeXPath(node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const parentXPath = getElementXPath(node.parentNode);
+      const textNodes = [...node.parentNode.childNodes].filter(n => n.nodeType === Node.TEXT_NODE);
+      const textIndex = textNodes.indexOf(node) + 1;
+      return `${parentXPath}/text()[${textIndex}]`;
+    }
+    return getElementXPath(node);
+  }
+
+  function serializeRange(node, start, end) {
+    const xpath = getNodeXPath(node);
+    return {
+      startXPath: xpath,
+      startOffset: start,
+      endXPath: xpath,
+      endOffset: end
+    };
+  }
+
+  function buildTextFragmentUrl(baseUrl, text) {
+    const cleanUrl = baseUrl.split('#')[0];
+    const maxLen = 80;
+    const fragment = text.length > maxLen ? text.slice(0, maxLen) : text;
+    return `${cleanUrl}#:~:text=${encodeURIComponent(fragment)}`;
+  }
+
   function buildWordEntry(lookup) {
     const sentence = extractSentenceFromDetection(lookup);
     const now = Date.now();
@@ -740,10 +815,15 @@
     // 构建上下文对象
     const contexts = [];
     if (sentence) {
+      const sourceLink = buildTextFragmentUrl(window.location.href, sentence);
+      const sourceRange = lookup.node
+        ? serializeRange(lookup.node, lookup.start, lookup.end)
+        : undefined;
       contexts.push({
         context: sentence,
         timeAdded: now,
-        sourceLink: window.location.href,
+        sourceLink,
+        sourceRange,
         translation: ""
       });
     }
@@ -795,6 +875,12 @@
       return;
     }
 
+    if (response.duplicate) {
+      showToast("已添加");
+      safeClosePopupAndReset();
+      return;
+    }
+
     if (response.saved) {
       showToast("添加成功");
       safeClosePopupAndReset();
@@ -808,8 +894,8 @@
     window.setTimeout(() => {
       try {
         closePopupAndReset();
-      } catch (_error) {
-        // ignore
+      } catch (error) {
+        _logger.warn("关闭弹窗时出现异常：", error);
       }
     }, 0);
   }
@@ -847,36 +933,52 @@
     }
   }
 
+  // 初始化 CSS Custom Highlight（用于在按住唤起键时高亮鼠标指向的单词）
+  function ensureWordHighlight() {
+    if (typeof Highlight === "undefined" || !CSS?.highlights) {
+      return null;
+    }
+    if (!wordHighlight) {
+      wordHighlight = new Highlight();
+      CSS.highlights.set(HIGHLIGHT_NAME, wordHighlight);
+    }
+    if (!document.getElementById(HIGHLIGHT_STYLE_ID)) {
+      const style = document.createElement("style");
+      style.id = HIGHLIGHT_STYLE_ID;
+      style.textContent = `::highlight(${HIGHLIGHT_NAME}) { background-color: Highlight; color: HighlightText; }`;
+      document.documentElement.appendChild(style);
+    }
+    return wordHighlight;
+  }
+
+  // 高亮指定文本节点内 [start, end) 区间的单词，效果与划词选中一致
+  function highlightWord(node, start, end) {
+    const highlight = ensureWordHighlight();
+    if (!highlight || !node) {
+      return;
+    }
+    try {
+      const range = document.createRange();
+      range.setStart(node, start);
+      range.setEnd(node, end);
+      highlight.clear();
+      highlight.add(range);
+    } catch (error) {
+      highlight.clear();
+    }
+  }
+
+  function clearWordHighlight() {
+    if (wordHighlight) {
+      wordHighlight.clear();
+    }
+  }
+
   function clearHoverTimer() {
     if (hoverTimer) {
       clearTimeout(hoverTimer);
       hoverTimer = null;
     }
-  }
-
-  function escapeHtml(value) {
-    return String(value || "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
-  }
-
-  function sendMessage(message) {
-    return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage(message, (response) => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-          return;
-        }
-        if (!response?.success) {
-          reject(new Error(response?.error || "扩展消息请求失败"));
-          return;
-        }
-        resolve(response);
-      });
-    });
   }
 
   const POPUP_CSS = `

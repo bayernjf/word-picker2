@@ -15,16 +15,35 @@
         </div>
       </header>
 
-      <section class="controls">
-        <input id="search-input" type="search" placeholder="搜索单词、释义、来源..." />
-        <div class="export-actions">
-          <button id="export-json" type="button">导出 JSON</button>
-          <button id="export-csv" type="button">导出 CSV</button>
+      <!-- 登录提示区域 -->
+      <section id="auth-required" class="auth-required" style="display: none;">
+        <div class="auth-message">
+          <h2>🔐 请先登录</h2>
+          <p>登录后才能查看和管理您的单词本</p>
+          <a href="#" id="open-options" class="open-options-btn">打开设置登录</a>
         </div>
       </section>
 
-      <section id="status" class="status" aria-live="polite"></section>
-      <section id="word-list" class="word-list"></section>
+      <!-- 主要内容区域 -->
+      <section id="main-content" class="main-content">
+        <section class="controls">
+          <div class="book-selector">
+            <label for="book-select">单词本：</label>
+            <select id="book-select">
+            </select>
+            <button id="refresh-books" type="button" title="刷新单词本列表">🔄</button>
+          </div>
+          <input id="search-input" type="search" placeholder="搜索单词、释义、来源..." />
+          <div class="export-actions">
+            <button id="export-json" type="button">导出 JSON</button>
+            <button id="export-csv" type="button">导出 CSV</button>
+          </div>
+        </section>
+
+        <section id="sync-status" class="sync-status" aria-live="polite"></section>
+        <section id="status" class="status" aria-live="polite"></section>
+        <section id="word-list" class="word-list"></section>
+      </section>
     </main>
 
     <script type="module" src="./popup.js"></script>
