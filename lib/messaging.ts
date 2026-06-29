@@ -17,9 +17,11 @@ export const MESSAGE_TYPES = {
   AUTH_SET_REMEMBER: "AUTH_SET_REMEMBER",
   AUTH_GET_CREDENTIALS: "AUTH_GET_CREDENTIALS",
   TRANSLATE: "TRANSLATE",
-  PING: "PING"
+  PING: "PING",
 };
 
-export function isKnownMessageType(type) {
+export type MessageType = keyof typeof MESSAGE_TYPES;
+
+export function isKnownMessageType(type: string): boolean {
   return Object.prototype.hasOwnProperty.call(MESSAGE_TYPES, type);
 }

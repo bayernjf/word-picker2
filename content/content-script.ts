@@ -1,24 +1,32 @@
 (() => {
   const _logger = {
-    debug: (...args) => console.debug(`[${new Date().toLocaleTimeString('zh-CN',{hour12:false})}] [content-script] [DEBUG]`, ...args),
-    info: (...args) => console.info(`[${new Date().toLocaleTimeString('zh-CN',{hour12:false})}] [content-script] [INFO]`, ...args),
-    warn: (...args) => console.warn(`[${new Date().toLocaleTimeString('zh-CN',{hour12:false})}] [content-script] [WARN]`, ...args),
-    error: (...args) => console.error(`[${new Date().toLocaleTimeString('zh-CN',{hour12:false})}] [content-script] [ERROR]`, ...args),
+    debug: (...args: unknown[]) => console.debug(`[${new Date().toLocaleTimeString('zh-CN',{hour12:false})}] [content-script] [DEBUG]`, ...args),
+    info: (...args: unknown[]) => console.info(`[${new Date().toLocaleTimeString('zh-CN',{hour12:false})}] [content-script] [INFO]`, ...args),
+    warn: (...args: unknown[]) => console.warn(`[${new Date().toLocaleTimeString('zh-CN',{hour12:false})}] [content-script] [WARN]`, ...args),
+    error: (...args: unknown[]) => console.error(`[${new Date().toLocaleTimeString('zh-CN',{hour12:false})}] [content-script] [ERROR]`, ...args),
   };
 
-  const { escapeHtml, sendMessage } = window.__WordCatcherShared;
+  const { escapeHtml, sendMessage } = (window as any).__WordCatcherShared;
 
   const STATE = {
     IDLE: "idle",
     PEN: "pen",
     LOADING: "loading",
-    SHOWING: "showing"
-  };
+    SHOWING: "showing",
+  } as const;
 
-  const DEFAULT_SETTINGS = {
+  type State = typeof STATE[keyof typeof STATE];
+
+  interface Settings {
+    lookupKey: "Control" | "Command" | "Alt" | "Option";
+    hoverDelay: number;
+    autoSpeak: boolean;
+  }
+
+  const DEFAULT_SETTINGS: Settings = {
     lookupKey: "Control",
     hoverDelay: 100,
-    autoSpeak: false
+    autoSpeak: false,
   };
 
   const WORD_PATTERN = /[A-Za-z][A-Za-z'-]{1,44}/g;
@@ -30,40 +38,73 @@
   const PEN_CURSOR_DATA_URL =
     "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cpath fill='%234472C4' d='M19.73 5.33a2 2 0 0 0-2.83 0l-1.42 1.42 4.24 4.24 1.42-1.42a2 2 0 0 0 0-2.83l-1.41-1.41Z'/%3E%3Cpath fill='%23FFFFFF' d='m14.07 8.1 4.24 4.24-8.84 8.84-4.98 1.13 1.13-4.98 8.45-8.45Z'/%3E%3Cpath fill='%231F2A44' d='m6.54 17.99 1.47-1.47 1.94 1.94-1.48 1.47-1.93.44.44-1.93Z'/%3E%3C/g%3E%3C/svg%3E";
 
-  let currentState = STATE.IDLE;
-  let settings = { ...DEFAULT_SETTINGS };
-  let hoverTimer = null;
-  let keydownPopupTimer = null;
-  let popupHost = null;
-  let popupShadow = null;
-  let popupContainer = null;
-  let toastHost = null;
-  let toastShadow = null;
-  let toastTimer = null;
-  let toastNode = null;
+  let currentState: State = STATE.IDLE;
+  let settings: Settings = { ...DEFAULT_SETTINGS };
+  let hoverTimer: number | null = null;
+  let keydownPopupTimer: number | null = null;
+  let popupHost: HTMLDivElement | null = null;
+  let popupShadow: ShadowRoot | null = null;
+  let popupContainer: HTMLDivElement | null = null;
+  let toastHost: HTMLDivElement | null = null;
+  let toastShadow: ShadowRoot | null = null;
+  let toastTimer: number | null = null;
+  let toastNode: HTMLDivElement | null = null;
   let activeAnchor = { x: 0, y: 0 };
-  let currentLookup = null;
+  let currentLookup: CurrentLookup | null = null;
   let latestRequestToken = 0;
   let lookupKeyPressed = false;
   let isUpdatingPopup = false;
   let pendingPopupFocus = false;
-  let wordHighlight = null;
+  let wordHighlight: Highlight | null = null;
 
   const KEYDOWN_POPUP_DELAY_MS = 100;
 
+  interface DetectionResult {
+    word: string;
+    node: Node;
+    text: string;
+    start: number;
+    end: number;
+    offset: number;
+  }
+
+  interface CurrentLookup extends DetectionResult {
+    signature: string;
+    translation?: TranslationData;
+  }
+
+  interface TranslationData {
+    word: string;
+    phonetic?: string;
+    meaning: string;
+    exampleEn?: string;
+    exampleZh?: string;
+    sentence?: string;
+    note?: string;
+    error?: boolean;
+    provider?: string;
+  }
+
+  interface SourceRange {
+    startXPath: string;
+    startOffset: number;
+    endXPath: string;
+    endOffset: number;
+  }
+
   initialize();
 
-  async function initialize() {
+  async function initialize(): Promise<void> {
     await loadSettings();
     bindEvents();
   }
 
-  async function loadSettings() {
+  async function loadSettings(): Promise<void> {
     try {
       const response = await sendMessage({ type: "GET_SETTINGS" });
       settings = {
         ...DEFAULT_SETTINGS,
-        ...(response.settings || {})
+        ...(response.settings || {}),
       };
     } catch (error) {
       _logger.warn("加载设置失败，使用默认设置：", error);
@@ -71,7 +112,7 @@
     }
   }
 
-  function bindEvents() {
+  function bindEvents(): void {
     document.addEventListener("keydown", handleKeyDown, true);
     document.addEventListener("keyup", handleKeyUp, true);
     document.addEventListener("mousemove", handleMouseMove, true);
@@ -88,19 +129,19 @@
     });
   }
 
-  function handleStorageChange(changes, areaName) {
+  function handleStorageChange(changes: { [key: string]: chrome.storage.StorageChange }, areaName: string): void {
     if (areaName !== "local" || !changes.settings?.newValue) {
       return;
     }
 
     settings = {
       ...DEFAULT_SETTINGS,
-      ...changes.settings.newValue
+      ...changes.settings.newValue,
     };
     exitPenMode();
   }
 
-  function handleKeyDown(event) {
+  function handleKeyDown(event: KeyboardEvent): void {
     if (event.key === "Escape" && popupContainer) {
       event.preventDefault();
       event.stopPropagation();
@@ -135,7 +176,7 @@
     }
   }
 
-  function handleKeyUp(event) {
+  function handleKeyUp(event: KeyboardEvent): void {
     if (!isLookupKeyEvent(event)) {
       return;
     }
@@ -148,7 +189,7 @@
     leavePenMode({ preservePopup: Boolean(popupContainer) });
   }
 
-  function isLookupModifierStillHeld(event) {
+  function isLookupModifierStillHeld(event: KeyboardEvent): boolean {
     if (settings.lookupKey === "Control") {
       return event.getModifierState("Control") || event.getModifierState("Meta");
     }
@@ -156,7 +197,7 @@
     return event.getModifierState(settings.lookupKey);
   }
 
-  function isLookupKeyEvent(event) {
+  function isLookupKeyEvent(event: KeyboardEvent): boolean {
     if (!event) {
       return false;
     }
@@ -168,12 +209,16 @@
     return event.key === settings.lookupKey;
   }
 
-  function enterPenMode() {
+  function enterPenMode(): void {
     currentState = currentState === STATE.SHOWING || currentState === STATE.LOADING ? currentState : STATE.PEN;
     applyCursor();
   }
 
-  function leavePenMode({ preservePopup = false } = {}) {
+  interface LeavePenOptions {
+    preservePopup?: boolean;
+  }
+
+  function leavePenMode({ preservePopup = false }: LeavePenOptions = {}): void {
     clearHoverTimer();
     clearKeydownPopupTimer();
     removeCursor();
@@ -197,12 +242,12 @@
     closePopupAndReset();
   }
 
-  function exitPenMode() {
+  function exitPenMode(): void {
     lookupKeyPressed = false;
     closePopupAndReset();
   }
 
-  function closePopupAndReset() {
+  function closePopupAndReset(): void {
     clearHoverTimer();
     clearKeydownPopupTimer();
     latestRequestToken += 1;
@@ -215,7 +260,7 @@
     clearWordHighlight();
   }
 
-  function scheduleInitialLookupAfterKeydown() {
+  function scheduleInitialLookupAfterKeydown(): void {
     clearKeydownPopupTimer();
     keydownPopupTimer = window.setTimeout(() => {
       keydownPopupTimer = null;
@@ -232,14 +277,14 @@
     }, KEYDOWN_POPUP_DELAY_MS);
   }
 
-  function clearKeydownPopupTimer() {
+  function clearKeydownPopupTimer(): void {
     if (keydownPopupTimer) {
       clearTimeout(keydownPopupTimer);
       keydownPopupTimer = null;
     }
   }
 
-  function isPopupPinned() {
+  function isPopupPinned(): boolean {
     return Boolean(
       popupContainer
       && !lookupKeyPressed
@@ -247,12 +292,12 @@
     );
   }
 
-  function isFocusInsidePopup() {
+  function isFocusInsidePopup(): boolean {
     const activeElement = popupShadow?.activeElement;
     return Boolean(activeElement && popupContainer?.contains(activeElement));
   }
 
-  function handleViewportChange() {
+  function handleViewportChange(): void {
     if (!popupContainer || isPopupPinned()) {
       return;
     }
@@ -260,7 +305,7 @@
     positionPopup(popupContainer, activeAnchor.x, activeAnchor.y);
   }
 
-  function handleWheelWhilePinned() {
+  function handleWheelWhilePinned(): void {
     if (!isPopupPinned()) {
       return;
     }
@@ -270,20 +315,20 @@
     });
   }
 
-  function handleFocusInWhilePinned(event) {
+  function handleFocusInWhilePinned(event: FocusEvent): void {
     if (!isPopupPinned()) {
       return;
     }
 
     const path = typeof event.composedPath === "function" ? event.composedPath() : [];
-    if (path.includes(popupHost) || path.includes(popupContainer)) {
+    if (path.includes(popupHost as EventTarget) || path.includes(popupContainer as EventTarget)) {
       return;
     }
 
     closePopupAndReset();
   }
 
-  function handleMouseMove(event) {
+  function handleMouseMove(event: MouseEvent): void {
     activeAnchor = { x: event.clientX, y: event.clientY };
 
     if (!lookupKeyPressed) {
@@ -306,7 +351,7 @@
   }
 
   // 根据鼠标位置检测单词并即时高亮；未命中单词时清除高亮
-  function updateHoverHighlight(x, y) {
+  function updateHoverHighlight(x: number, y: number): void {
     const detection = detectWordAtPoint(x, y);
     if (detection?.node) {
       highlightWord(detection.node, detection.start, detection.end);
@@ -315,7 +360,7 @@
     }
   }
 
-  async function lookupAtPoint(x, y) {
+  async function lookupAtPoint(x: number, y: number): Promise<void> {
     const detection = detectWordAtPoint(x, y);
     if (!detection) {
       if (lookupKeyPressed && currentState !== STATE.LOADING) {
@@ -328,14 +373,14 @@
 
     const signature = `${detection.word.toLowerCase()}|${detection.start}|${detection.end}|${detection.text}`;
     if (currentLookup?.signature === signature && (currentState === STATE.LOADING || currentState === STATE.SHOWING)) {
-      positionPopup(popupContainer, x, y);
+      positionPopup(popupContainer!, x, y);
       return;
     }
 
     _logger.debug('lookupAtPoint', { word: detection.word, x, y });
     currentLookup = {
       ...detection,
-      signature
+      signature,
     };
     currentState = STATE.LOADING;
     showPopup(x, y, buildLoadingData(detection.word));
@@ -345,7 +390,7 @@
     try {
       const response = await sendMessage({
         type: "TRANSLATE",
-        word: detection.word
+        word: detection.word,
       });
 
       if (requestToken !== latestRequestToken || currentLookup?.signature !== signature) {
@@ -357,7 +402,7 @@
       _logger.debug('lookupAtPoint translation received', { word: detection.word, provider: translation.provider });
       updatePopup({
         ...translation,
-        sentence: extractSentenceFromDetection(detection)
+        sentence: extractSentenceFromDetection(detection),
       });
       currentState = STATE.SHOWING;
 
@@ -381,7 +426,7 @@
         exampleEn: "",
         exampleZh: "",
         sentence: extractSentenceFromDetection(detection),
-        error: true
+        error: true,
       });
       currentState = STATE.SHOWING;
 
@@ -392,7 +437,7 @@
     }
   }
 
-  function detectWordAtPoint(x, y) {
+  function detectWordAtPoint(x: number, y: number): DetectionResult | null {
     if (isExcludedArea(x, y)) {
       return null;
     }
@@ -425,7 +470,7 @@
           text,
           start,
           end,
-          offset
+          offset,
         };
       }
     }
@@ -433,7 +478,12 @@
     return null;
   }
 
-  function getCaretAtPoint(x, y) {
+  interface CaretPosition {
+    node: Node;
+    offset: number;
+  }
+
+  function getCaretAtPoint(x: number, y: number): CaretPosition | null {
     if (typeof document.caretPositionFromPoint === "function") {
       const position = document.caretPositionFromPoint(x, y);
       if (!position) {
@@ -441,7 +491,7 @@
       }
       return {
         node: position.offsetNode,
-        offset: position.offset
+        offset: position.offset,
       };
     }
 
@@ -452,14 +502,14 @@
       }
       return {
         node: range.startContainer,
-        offset: range.startOffset
+        offset: range.startOffset,
       };
     }
 
     return null;
   }
 
-  function isExcludedArea(x, y) {
+  function isExcludedArea(x: number, y: number): boolean {
     const element = document.elementFromPoint(x, y);
     if (!element) {
       return true;
@@ -470,7 +520,7 @@
     return Boolean(element.closest(EXCLUDED_SELECTOR));
   }
 
-  function extractSentenceFromDetection(detection) {
+  function extractSentenceFromDetection(detection: DetectionResult): string {
     if (!detection?.text) {
       return "";
     }
@@ -490,18 +540,18 @@
     return detection.text.slice(start, end).trim().replace(/\s+/g, " ");
   }
 
-  function buildLoadingData(word) {
+  function buildLoadingData(word: string): TranslationData {
     return {
       word,
       phonetic: "",
       meaning: "正在查询翻译...",
       exampleEn: "",
       exampleZh: "",
-      sentence: currentLookup ? extractSentenceFromDetection(currentLookup) : ""
+      sentence: currentLookup ? extractSentenceFromDetection(currentLookup) : "",
     };
   }
 
-  function createPopupHost() {
+  function createPopupHost(): void {
     popupHost = document.createElement("div");
     popupHost.id = "word-catcher-popup-host";
     popupHost.style.position = "fixed";
@@ -518,7 +568,7 @@
     popupShadow.appendChild(style);
   }
 
-  function removeAllPopupContainers() {
+  function removeAllPopupContainers(): void {
     if (popupShadow) {
       popupShadow.querySelectorAll(".popup-container").forEach((node) => {
         node.remove();
@@ -527,7 +577,7 @@
     popupContainer = null;
   }
 
-  function copyPopupPosition(fromElement, toElement) {
+  function copyPopupPosition(fromElement: HTMLElement, toElement: HTMLElement): void {
     if (!fromElement || !toElement) {
       return;
     }
@@ -540,7 +590,7 @@
     }
   }
 
-  function showPopup(x, y, data) {
+  function showPopup(x: number, y: number, data: TranslationData): void {
     activeAnchor = { x, y };
     if (!popupHost) {
       createPopupHost();
@@ -548,7 +598,7 @@
 
     removeAllPopupContainers();
     popupContainer = buildPopupElement(data);
-    popupShadow.appendChild(popupContainer);
+    popupShadow!.appendChild(popupContainer);
     positionPopup(popupContainer, x, y);
     requestAnimationFrame(() => {
       if (popupContainer?.isConnected) {
@@ -557,7 +607,7 @@
     });
   }
 
-  function updatePopup(data) {
+  function updatePopup(data: TranslationData): void {
     if (!popupContainer?.isConnected) {
       showPopup(activeAnchor.x, activeAnchor.y, data);
       return;
@@ -578,7 +628,7 @@
     });
   }
 
-  function buildPopupElement(data) {
+  function buildPopupElement(data: TranslationData): HTMLDivElement {
     const container = document.createElement("div");
     container.className = "popup-container";
     container.tabIndex = -1;
@@ -628,7 +678,7 @@
           return;
         }
 
-        if (event.relatedTarget && popupContainer.contains(event.relatedTarget)) {
+        if (event.relatedTarget && popupContainer.contains(event.relatedTarget as Node)) {
           return;
         }
 
@@ -640,11 +690,11 @@
       }, 0);
     });
 
-    container.querySelector(".popup-close").addEventListener("click", () => {
+    container.querySelector(".popup-close")!.addEventListener("click", () => {
       closePopupAndReset();
     });
 
-    container.querySelector(".btn-save").addEventListener("click", async () => {
+    container.querySelector(".btn-save")!.addEventListener("click", async () => {
       if (!currentLookup?.translation) {
         return;
       }
@@ -653,7 +703,7 @@
       try {
         response = await sendMessage({
           type: "SAVE_WORD",
-          entry: buildWordEntry(currentLookup)
+          entry: buildWordEntry(currentLookup),
         });
       } catch (error) {
         showToast(error instanceof Error ? error.message : "保存失败");
@@ -678,7 +728,7 @@
     return container;
   }
 
-  function focusPopup() {
+  function focusPopup(): void {
     if (!popupContainer) {
       return;
     }
@@ -686,7 +736,7 @@
     popupContainer.focus({ preventScroll: true });
   }
 
-  function positionPopup(element, mouseX, mouseY) {
+  function positionPopup(element: HTMLElement, mouseX: number, mouseY: number): void {
     if (!element) {
       return;
     }
@@ -708,11 +758,11 @@
     element.style.top = `${Math.max(8, top)}px`;
   }
 
-  function hidePopup() {
+  function hidePopup(): void {
     removeAllPopupContainers();
   }
 
-  function ensureToastHost() {
+  function ensureToastHost(): void {
     if (toastHost && toastShadow) {
       return;
     }
@@ -731,7 +781,7 @@
     toastShadow.appendChild(style);
   }
 
-  function showToast(message) {
+  function showToast(message: string): void {
     ensureToastHost();
 
     if (!toastShadow) {
@@ -764,13 +814,13 @@
   }
 
   // 序列化 DOM 节点为 XPath（用于精确定位回原文）
-  function getElementXPath(element) {
+  function getElementXPath(element: Node | null): string {
     if (!element) return '';
-    if (element.id) return `//*[@id="${CSS.escape(element.id)}"]`;
-    const path = [];
+    if (element instanceof Element && element.id) return `//*[@id="${CSS.escape(element.id)}"]`;
+    const path: string[] = [];
     while (element && element.nodeType === Node.ELEMENT_NODE) {
       let index = 1;
-      for (let sibling = element.previousSibling; sibling; sibling = sibling.previousSibling) {
+      for (let sibling: Node | null = element.previousSibling; sibling; sibling = sibling.previousSibling) {
         if (sibling.nodeType === Node.ELEMENT_NODE && sibling.nodeName === element.nodeName) {
           index++;
         }
@@ -781,39 +831,46 @@
     return '/' + path.join('/');
   }
 
-  function getNodeXPath(node) {
+  function getNodeXPath(node: Node): string {
     if (node.nodeType === Node.TEXT_NODE) {
       const parentXPath = getElementXPath(node.parentNode);
-      const textNodes = [...node.parentNode.childNodes].filter(n => n.nodeType === Node.TEXT_NODE);
-      const textIndex = textNodes.indexOf(node) + 1;
+      const textNodes = Array.from(node.parentNode!.childNodes as NodeListOf<ChildNode>).filter(n => n.nodeType === Node.TEXT_NODE);
+      const textIndex = textNodes.indexOf(node as ChildNode) + 1;
       return `${parentXPath}/text()[${textIndex}]`;
     }
-    return getElementXPath(node);
+    return getElementXPath(node as Element);
   }
 
-  function serializeRange(node, start, end) {
+  function serializeRange(node: Node, start: number, end: number): SourceRange {
     const xpath = getNodeXPath(node);
     return {
       startXPath: xpath,
       startOffset: start,
       endXPath: xpath,
-      endOffset: end
+      endOffset: end,
     };
   }
 
-  function buildTextFragmentUrl(baseUrl, text) {
+  function buildTextFragmentUrl(baseUrl: string, text: string): string {
     const cleanUrl = baseUrl.split('#')[0];
     const maxLen = 80;
     const fragment = text.length > maxLen ? text.slice(0, maxLen) : text;
     return `${cleanUrl}#:~:text=${encodeURIComponent(fragment)}`;
   }
 
-  function buildWordEntry(lookup) {
+  function buildWordEntry(lookup: CurrentLookup): any {
     const sentence = extractSentenceFromDetection(lookup);
     const now = Date.now();
-    
+
     // 构建上下文对象
-    const contexts = [];
+    interface ContextEntry {
+      context: string;
+      timeAdded: number;
+      sourceLink: string;
+      sourceRange?: SourceRange;
+      translation: string;
+    }
+    const contexts: ContextEntry[] = [];
     if (sentence) {
       const sourceLink = buildTextFragmentUrl(window.location.href, sentence);
       const sourceRange = lookup.node
@@ -824,44 +881,44 @@
         timeAdded: now,
         sourceLink,
         sourceRange,
-        translation: ""
+        translation: "",
       });
     }
-    
+
     return {
-      word: lookup.translation.word || lookup.word,
+      word: lookup.translation!.word || lookup.word,
       frequency: contexts.length || 1,
-      translation: lookup.translation.meaning || "",
+      translation: lookup.translation!.meaning || "",
       timeAdded: now,
       timeUpdated: now,
       contexts: contexts,
       // 保留旧数据作为兼容
       _legacy: {
         id: crypto.randomUUID(),
-        phonetic: lookup.translation.phonetic || "",
-        exampleEn: lookup.translation.exampleEn || "",
-        exampleZh: lookup.translation.exampleZh || "",
+        phonetic: lookup.translation!.phonetic || "",
+        exampleEn: lookup.translation!.exampleEn || "",
+        exampleZh: lookup.translation!.exampleZh || "",
         sourceUrl: window.location.href,
         sourceTitle: document.title,
         tags: [],
         createdAt: now,
-        reviewCount: 0
-      }
+        reviewCount: 0,
+      },
     };
   }
 
-  async function saveLookupWord(lookup) {
+  async function saveLookupWord(lookup: CurrentLookup): Promise<any> {
     if (!lookup?.translation) {
       throw new Error("单词翻译数据无效");
     }
 
     return await sendMessage({
       type: "SAVE_WORD",
-      entry: buildWordEntry(lookup)
+      entry: buildWordEntry(lookup),
     });
   }
 
-  async function saveLookupWordWithFeedback(lookup) {
+  async function saveLookupWordWithFeedback(lookup: CurrentLookup): Promise<void> {
     if (!lookup?.translation || !popupContainer?.isConnected) {
       closePopupAndReset();
       return;
@@ -890,7 +947,7 @@
     showToast("保存失败");
   }
 
-  function safeClosePopupAndReset() {
+  function safeClosePopupAndReset(): void {
     window.setTimeout(() => {
       try {
         closePopupAndReset();
@@ -900,7 +957,7 @@
     }, 0);
   }
 
-  function speakWord(word) {
+  function speakWord(word: string): void {
     if (!("speechSynthesis" in window) || !word) {
       return;
     }
@@ -908,10 +965,63 @@
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(word);
     utterance.lang = "en-US";
+    // 语速略低于默认，更接近自然朗读节奏
+    utterance.rate = 0.9;
+    utterance.pitch = 1;
+    const voice = pickEnglishVoice();
+    if (voice) {
+      utterance.voice = voice;
+    }
     window.speechSynthesis.speak(utterance);
   }
 
-  function applyCursor() {
+  // 优先选择高质量的英文女声（Google/系统女声），避免默认机器人音色。
+  // 注意：voices 列表可能在页面加载后才异步就绪，取不到时先用默认 voice。
+  function pickEnglishVoice(): SpeechSynthesisVoice | null {
+    const voices = window.speechSynthesis.getVoices();
+    if (!voices || voices.length === 0) {
+      return null;
+    }
+    const enVoices = voices.filter((v) => /^en(-|_)/i.test(v.lang));
+    const pool = enVoices.length > 0 ? enVoices : voices;
+
+    // 按优先级匹配高质量音色：Google 系列 > 女性/自然名 > 其余
+    const preferredNames = [
+      "Google US English",
+      "Google UK English Female",
+      "Samantha",
+      "Karen",
+      "Moira",
+      "Tessa",
+      "Zira",
+      "Microsoft Aria",
+      "Microsoft Jenny",
+    ];
+    for (const name of preferredNames) {
+      const found = pool.find((v) => v.name === name);
+      if (found) {
+        return found;
+      }
+    }
+    const google = pool.find((v) => /google/i.test(v.name));
+    if (google) {
+      return google;
+    }
+    const female = pool.find((v) => /female|aria|jenny|zira|samantha|karen|moira|tessa/i.test(v.name));
+    if (female) {
+      return female;
+    }
+    return pool[0] || null;
+  }
+
+  // voices 列表异步加载：首次就绪后无需额外动作，下次 speakWord 会自动取到
+  if ("speechSynthesis" in window) {
+    window.speechSynthesis.onvoiceschanged = () => {
+      window.speechSynthesis.getVoices();
+    };
+  }
+
+  function applyCursor(): void {
     let style = document.getElementById(CURSOR_STYLE_ID);
     if (!style) {
       style = document.createElement("style");
@@ -926,7 +1036,7 @@
     `;
   }
 
-  function removeCursor() {
+  function removeCursor(): void {
     const style = document.getElementById(CURSOR_STYLE_ID);
     if (style) {
       style.remove();
@@ -934,7 +1044,7 @@
   }
 
   // 初始化 CSS Custom Highlight（用于在按住唤起键时高亮鼠标指向的单词）
-  function ensureWordHighlight() {
+  function ensureWordHighlight(): Highlight | null {
     if (typeof Highlight === "undefined" || !CSS?.highlights) {
       return null;
     }
@@ -952,7 +1062,7 @@
   }
 
   // 高亮指定文本节点内 [start, end) 区间的单词，效果与划词选中一致
-  function highlightWord(node, start, end) {
+  function highlightWord(node: Node, start: number, end: number): void {
     const highlight = ensureWordHighlight();
     if (!highlight || !node) {
       return;
@@ -968,13 +1078,13 @@
     }
   }
 
-  function clearWordHighlight() {
+  function clearWordHighlight(): void {
     if (wordHighlight) {
       wordHighlight.clear();
     }
   }
 
-  function clearHoverTimer() {
+  function clearHoverTimer(): void {
     if (hoverTimer) {
       clearTimeout(hoverTimer);
       hoverTimer = null;

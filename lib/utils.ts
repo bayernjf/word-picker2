@@ -1,6 +1,6 @@
 import { DEFAULT_BOOK_NAME } from "./constants.js";
 
-export function escapeHtml(value) {
+export function escapeHtml(value: unknown): string {
   return String(value || "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -9,9 +9,15 @@ export function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-export function sendMessage(message) {
+export interface MessageResponse {
+  success: boolean;
+  error?: string;
+  [key: string]: unknown;
+}
+
+export function sendMessage<TResponse extends { success: boolean; error?: string } = MessageResponse>(message: object): Promise<TResponse> {
   return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage(message, (response) => {
+    chrome.runtime.sendMessage(message, (response: TResponse) => {
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
         return;
@@ -25,11 +31,12 @@ export function sendMessage(message) {
   });
 }
 
-export function formatDate(timeValue) {
+export function formatDate(timeValue: number | string): string {
   if (!timeValue) {
     return "未知";
   }
-  let date;
+
+  let date: Date;
   if (typeof timeValue === "number") {
     date = new Date(timeValue);
   } else if (typeof timeValue === "string") {
@@ -43,11 +50,20 @@ export function formatDate(timeValue) {
   }
 
   return date.toLocaleString("zh-CN", {
-    hour12: false
+    hour12: false,
   });
 }
 
-export function formatSyncStatusSummary(status = {}) {
+export interface SyncStatus {
+  syncQueueSize?: number;
+  pendingSyncCount?: number;
+  queueSize?: number;
+  deleteQueueSize?: number;
+  pendingDeleteCount?: number;
+  lastSyncAt?: number;
+}
+
+export function formatSyncStatusSummary(status: SyncStatus = {}): string {
   const syncQueueSize = readQueueCount(
     status.syncQueueSize,
     status.pendingSyncCount,
@@ -59,7 +75,7 @@ export function formatSyncStatusSummary(status = {}) {
   return `待同步 ${syncQueueSize} 条 ｜ 待删除 ${deleteQueueSize} 条 ｜ 最后同步：${lastSyncAt}`;
 }
 
-function readQueueCount(...values) {
+function readQueueCount(...values: (number | undefined)[]): number {
   for (const value of values) {
     const count = Number(value);
     if (Number.isFinite(count)) {
@@ -69,7 +85,7 @@ function readQueueCount(...values) {
   return 0;
 }
 
-export function clampNumber(value, min, max, fallback) {
+export function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
     return fallback;
@@ -77,11 +93,19 @@ export function clampNumber(value, min, max, fallback) {
   return Math.max(min, Math.min(max, parsed));
 }
 
-export function normalizeContextValue(context) {
+export function normalizeContextValue(context: unknown): string {
   return String(context || "").trim().replace(/\s+/g, " ");
 }
 
-export function normalizeSourceLinkValue(context) {
+export interface ContextEntry {
+  context?: string;
+  sourceLink?: string;
+  source_link?: string;
+  sourceUrl?: string;
+  source_url?: string;
+}
+
+export function normalizeSourceLinkValue(context: ContextEntry): string {
   const raw = String(
     context?.sourceLink ||
     context?.source_link ||
@@ -100,7 +124,18 @@ export function normalizeSourceLinkValue(context) {
   }
 }
 
-export function selectPreferredSyncBook(books) {
+export interface Book {
+  id: string;
+  name: string;
+  description?: string;
+  wordCount?: number;
+  icon?: string;
+  isSync?: boolean;
+  updatedAt?: number;
+  createdAt?: number;
+}
+
+export function selectPreferredSyncBook(books: Book[]): Book | null {
   return [...books]
     .filter((book) => book?.isSync)
     .sort((left, right) => {

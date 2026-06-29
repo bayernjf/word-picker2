@@ -1,0 +1,24 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./dist/extension",
+    "rootDir": ".",
+    "types": ["chrome"],
+    "lib": ["ES2022", "DOM"],
+    "noEmitOnError": true
+  },
+  "include": [
+    "./content/**/*.ts",
+    "./lib/**/*.ts",
+    "./options/**/*.ts",
+    "./popup/**/*.ts",
+    "./service/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "assets",
+    "scripts",
+    "tests"
+  ]
+}

@@ -25,7 +25,7 @@ const STORE_META = "meta"; // keyPath: name
 const DICT_ASSET_PATH = "assets/dict/ecdict.min.json";
 const META_VERSION_KEY = "dictVersion";
 
-function openDb() {
+function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
@@ -45,7 +45,7 @@ function openDb() {
   });
 }
 
-function txComplete(tx) {
+function txComplete(tx: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
@@ -53,7 +53,7 @@ function txComplete(tx) {
   });
 }
 
-function getByKey(db, storeName, key) {
+function getByKey(db: IDBDatabase, storeName: string, key: string): Promise<any> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(storeName, "readonly");
     const request = tx.objectStore(storeName).get(key);
@@ -62,13 +62,13 @@ function getByKey(db, storeName, key) {
   });
 }
 
-let importPromise = null;
+let importPromise: Promise<void> | null = null;
 
 /**
  * 确保离线词库已导入 IndexedDB（幂等）。
  * 多次并发调用复用同一 Promise，避免重复导入。
  */
-export function ensureDictImported() {
+export function ensureDictImported(): Promise<void> {
   logger.debug('ensureDictImported');
   if (!importPromise) {
     importPromise = doImport().catch((error) => {
@@ -80,7 +80,13 @@ export function ensureDictImported() {
   return importPromise;
 }
 
-async function doImport() {
+interface DictData {
+  version?: number;
+  entries?: Array<{ w?: string; p?: string; t?: string }>;
+  lemma?: Record<string, string>;
+}
+
+async function doImport(): Promise<void> {
   const db = await openDb();
 
   // 读取打包词库的版本号
@@ -89,7 +95,7 @@ async function doImport() {
   if (!response.ok) {
     throw new Error(`无法加载词库资源：HTTP ${response.status}`);
   }
-  const data = await response.json();
+  const data: DictData = await response.json();
   const assetVersion = Number(data?.version) || 0;
 
   // 已是同版本则跳过
@@ -142,16 +148,26 @@ async function doImport() {
   logger.info(`[offlineDict] 词库导入完成：${entries.length} 词条 / ${lemmaEntries.length} 词形`);
 }
 
+export interface OfflineTranslationResult {
+  word: string;
+  meaning: string;
+  phonetic: string;
+  exampleEn: string;
+  exampleZh: string;
+  note: string;
+  provider: "offline";
+}
+
 /**
  * 离线查询单词。
  * @returns 命中返回 translator 兼容结构，未命中返回 null。
  */
-export async function lookupOffline(word) {
+export async function lookupOffline(word: string): Promise<OfflineTranslationResult | null> {
   const normalized = String(word || "").trim().toLowerCase();
   if (!normalized) return null;
   logger.debug('lookupOffline', { word: normalized });
 
-  let db;
+  let db: IDBDatabase;
   try {
     db = await openDb();
   } catch (error) {
@@ -165,9 +181,9 @@ export async function lookupOffline(word) {
 
     // 2. 未命中 -> 词形还原（went -> go）后再查
     if (!entry) {
-      const lemma = await getByKey(db, STORE_LEMMA, normalized);
-      if (lemma?.to) {
-        entry = await getByKey(db, STORE_ENTRIES, lemma.to);
+      const lemmaEntry = await getByKey(db, STORE_LEMMA, normalized);
+      if (lemmaEntry?.to) {
+        entry = await getByKey(db, STORE_ENTRIES, lemmaEntry.to);
       }
     }
 
