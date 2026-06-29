@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./dist/scripts",
+    "rootDir": "./scripts",
+    "types": ["node"],
+    "lib": ["ES2022"],
+    "noEmitOnError": true
+  },
+  "include": [
+    "./scripts/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
+}

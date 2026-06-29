@@ -1,4 +1,6 @@
 import { createLogger } from "./logger.js";
+import type { Settings } from "./storage.js";
+import type { OfflineTranslationResult } from "./offlineDict.js";
 
 const logger = createLogger("translator");
 
@@ -6,38 +8,55 @@ const MEMORY_TRANSLATE_ENDPOINT = "https://api.mymemory.translated.net/get";
 const FREE_DICTIONARY_ENDPOINT = "https://api.dictionaryapi.dev/api/v2/entries/en";
 const YOUDAO_DICT_ENDPOINT = "https://dict.youdao.com/jsonapi";
 
-const FALLBACK_DICTIONARY = {
+interface FallbackEntry {
+  meaning: string;
+  phonetic: string;
+  exampleEn: string;
+  exampleZh: string;
+}
+
+const FALLBACK_DICTIONARY: Record<string, FallbackEntry> = {
   ubiquitous: {
-    meaning: "adj. 无处不在的；普遍存在的",
+    meaning: "adj. 无处不在的；普遍存在",
     phonetic: "/juːˈbɪkwɪtəs/",
     exampleEn: "Cloud computing has become ubiquitous in modern society.",
-    exampleZh: "云计算在现代社会已经无处不在。"
+    exampleZh: "云计算在现代社会已经无处不在。",
   },
   algorithm: {
     meaning: "n. 算法；运算法则",
     phonetic: "/ˈalɡərɪðəm/",
     exampleEn: "The algorithm optimizes the result with fewer iterations.",
-    exampleZh: "这个算法用更少的迭代优化结果。"
+    exampleZh: "这个算法用更少的迭代优化结果。",
   },
   browser: {
     meaning: "n. 浏览器；浏览程序",
     phonetic: "/ˈbraʊzər/",
     exampleEn: "The browser extension works on Chromium-based products.",
-    exampleZh: "这个浏览器扩展可运行在基于 Chromium 的产品上。"
-  }
+    exampleZh: "这个浏览器扩展可运行在基于 Chromium 的产品上。",
+  },
 };
 
+export interface TranslationResult {
+  word: string;
+  meaning: string;
+  phonetic: string;
+  exampleEn: string;
+  exampleZh: string;
+  note: string;
+  provider: string;
+}
+
 // 给 Promise 加超时，避免单个慢接口拖慢整体
-function withTimeout(promise, ms) {
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([
     promise,
-    new Promise((_, reject) =>
+    new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error(`请求超时（${ms}ms）`)), ms)
-    )
+    ),
   ]);
 }
 
-export async function translateWord(word, settings) {
+export async function translateWord(word: string, settings: Settings): Promise<TranslationResult> {
   const normalizedWord = String(word || "").trim();
   if (!normalizedWord) {
     throw new Error("待翻译单词不能为空");
@@ -55,12 +74,28 @@ export async function translateWord(word, settings) {
   return result;
 }
 
-async function translateWithFreeApis(word, useYoudao = true) {
+interface FreeDictionaryEntry {
+  phonetic?: string;
+  phonetics?: Array<{ text?: string }>;
+  meanings?: Array<{
+    partOfSpeech?: string;
+    definitions?: Array<{
+      definition?: string;
+      example?: string;
+    }>;
+  }>;
+}
+
+interface YoudaoResult {
+  meaning: string;
+}
+
+async function translateWithFreeApis(word: string, useYoudao: boolean = true): Promise<TranslationResult> {
   const fallback = buildFallbackTranslation(word);
   const [translationResult, dictionaryResult, youdaoResult] = await Promise.allSettled([
     withTimeout(fetchFreeTranslation(word), 2500),
     withTimeout(fetchDictionaryEntry(word), 2500),
-    useYoudao ? withTimeout(fetchYoudaoDict(word), 2500) : Promise.resolve(null)
+    useYoudao ? withTimeout(fetchYoudaoDict(word), 2500) : Promise.resolve(null),
   ]);
 
   const translation = translationResult.status === "fulfilled" ? translationResult.value : null;
@@ -92,15 +127,15 @@ async function translateWithFreeApis(word, useYoudao = true) {
     exampleEn: dictionary?.exampleEn || fallback.exampleEn || "",
     exampleZh,
     note: buildNote(translation, dictionary, youdao),
-    provider: "free"
+    provider: "free",
   };
 }
 
-async function fetchFreeTranslation(text) {
+async function fetchFreeTranslation(text: string): Promise<string> {
   const url = new URL(MEMORY_TRANSLATE_ENDPOINT);
   url.search = new URLSearchParams({
     q: text,
-    langpair: "en|zh-CN"
+    langpair: "en|zh-CN",
   }).toString();
 
   const response = await fetch(url.toString());
@@ -121,7 +156,12 @@ async function fetchFreeTranslation(text) {
   return translatedText;
 }
 
-async function fetchDictionaryEntry(word) {
+async function fetchDictionaryEntry(word: string): Promise<{
+  phonetic: string;
+  partOfSpeech: string;
+  definitionEn: string;
+  exampleEn: string;
+} | null> {
   const response = await fetch(`${FREE_DICTIONARY_ENDPOINT}/${encodeURIComponent(word.toLowerCase())}`);
   if (response.status === 404) {
     return null;
@@ -131,7 +171,7 @@ async function fetchDictionaryEntry(word) {
   }
 
   const payload = await response.json();
-  const entry = Array.isArray(payload) ? payload[0] : null;
+  const entry: FreeDictionaryEntry = Array.isArray(payload) ? payload[0] : null;
   if (!entry) {
     return null;
   }
@@ -141,18 +181,18 @@ async function fetchDictionaryEntry(word) {
       entry.phonetics?.find((item) => item?.text)?.text ||
       ""
   );
-  const meaningNode = entry.meanings?.find((item) => item?.definitions?.length > 0) || null;
+  const meaningNode = entry.meanings?.find((item) => item?.definitions && item.definitions.length > 0) || null;
   const definitionNode = meaningNode?.definitions?.find((item) => item?.definition) || null;
 
   return {
     phonetic,
     partOfSpeech: meaningNode?.partOfSpeech || "",
     definitionEn: definitionNode?.definition || "",
-    exampleEn: definitionNode?.example || ""
+    exampleEn: definitionNode?.example || "",
   };
 }
 
-async function fetchYoudaoDict(word) {
+async function fetchYoudaoDict(word: string): Promise<YoudaoResult | null> {
   const url = new URL(YOUDAO_DICT_ENDPOINT);
   url.search = new URLSearchParams({ q: word }).toString();
 
@@ -167,7 +207,7 @@ async function fetchYoudaoDict(word) {
   const ecTrs = payload?.ec?.word?.[0]?.trs;
   if (Array.isArray(ecTrs) && ecTrs.length > 0) {
     const meanings = ecTrs
-      .map((item) => String(item?.tr?.[0]?.l?.i?.[0] || "").trim())
+      .map((item: any) => String(item?.tr?.[0]?.l?.i?.[0] || "").trim())
       .filter(Boolean);
     if (meanings.length > 0) {
       return { meaning: meanings.join("；") };
@@ -178,11 +218,11 @@ async function fetchYoudaoDict(word) {
   const webTrans = payload?.web_trans?.["web-translation"];
   if (Array.isArray(webTrans) && webTrans.length > 0) {
     const sameEntry =
-      webTrans.find((item) => item?.["@same"] === "true") || webTrans[0];
+      webTrans.find((item: any) => item?.["@same"] === "true") || webTrans[0];
     const trans = sameEntry?.trans;
     if (Array.isArray(trans) && trans.length > 0) {
       const meanings = trans
-        .map((item) => String(item?.value || "").trim())
+        .map((item: any) => String(item?.value || "").trim())
         .filter(Boolean)
         .slice(0, 4);
       if (meanings.length > 0) {
@@ -194,7 +234,7 @@ async function fetchYoudaoDict(word) {
   return null;
 }
 
-function buildFallbackTranslation(word, note = "") {
+function buildFallbackTranslation(word: string, note: string = ""): TranslationResult {
   const lower = word.toLowerCase();
   const preset = FALLBACK_DICTIONARY[lower];
   if (preset) {
@@ -202,7 +242,7 @@ function buildFallbackTranslation(word, note = "") {
       word,
       ...preset,
       note,
-      provider: "fallback"
+      provider: "fallback",
     };
   }
 
@@ -213,11 +253,16 @@ function buildFallbackTranslation(word, note = "") {
     exampleEn: "",
     exampleZh: "",
     note,
-    provider: "fallback"
+    provider: "fallback",
   };
 }
 
-function buildMeaning(translation, dictionary, fallback, youdao) {
+function buildMeaning(
+  translation: string | null,
+  dictionary: { phonetic: string; partOfSpeech: string; definitionEn: string; exampleEn: string } | null,
+  fallback: FallbackEntry,
+  youdao: YoudaoResult | null
+): string {
   // 优先使用有道英汉词典释义（含词性，最贴近中文用户）
   const youdaoMeaning = String(youdao?.meaning || "").trim();
   if (youdaoMeaning) {
@@ -239,7 +284,11 @@ function buildMeaning(translation, dictionary, fallback, youdao) {
   return fallback.meaning;
 }
 
-function buildNote(translation, dictionary, youdao) {
+function buildNote(
+  translation: string | null,
+  dictionary: { phonetic: string; partOfSpeech: string; definitionEn: string; exampleEn: string } | null,
+  youdao: YoudaoResult | null
+): string {
   if (youdao?.meaning) {
     return "";
   }
@@ -252,8 +301,8 @@ function buildNote(translation, dictionary, youdao) {
   return "";
 }
 
-function mapPartOfSpeech(partOfSpeech) {
-  const map = {
+function mapPartOfSpeech(partOfSpeech: string): string {
+  const map: Record<string, string> = {
     a: "adj.",
     "a.": "adj.",
     adjective: "adj.",
@@ -305,7 +354,7 @@ function mapPartOfSpeech(partOfSpeech) {
   return map[String(partOfSpeech || "").toLowerCase().trim()] || "";
 }
 
-function formatPhonetic(phonetic) {
+function formatPhonetic(phonetic: string): string {
   const value = String(phonetic || "").trim();
   if (!value) {
     return "";

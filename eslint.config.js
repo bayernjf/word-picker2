@@ -1,10 +1,12 @@
 import js from "@eslint/js";
+import tseslint from "typescript-eslint";
 import globals from "globals";
 
-export default [
+export default tseslint.config(
   js.configs.recommended,
+  ...tseslint.configs.recommended,
   {
-    files: ["**/*.js"],
+    files: ["**/*.ts", "**/*.js"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "module",
@@ -15,20 +17,23 @@ export default [
       }
     },
     rules: {
-      "no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
+      "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
+      // 边界处（JSON 解析、旧数据兼容）暂留 any，降为警告不阻断，后续渐进收紧
+      "@typescript-eslint/no-explicit-any": "warn",
       "no-console": "off",
       "prefer-const": "warn",
       "eqeqeq": ["warn", "smart"]
     }
   },
   {
-    files: ["content/**/*.js"],
+    // content scripts 通过 manifest 按普通脚本顺序加载，非 ES module
+    files: ["content/**/*.ts", "content/**/*.js"],
     languageOptions: {
       sourceType: "script"
     }
   },
   {
-    files: ["tests/**/*.js"],
+    files: ["tests/**/*.ts", "tests/**/*.js"],
     languageOptions: {
       globals: {
         ...globals.node
@@ -36,7 +41,7 @@ export default [
     }
   },
   {
-    files: ["scripts/**/*.js"],
+    files: ["scripts/**/*.ts", "scripts/**/*.js"],
     languageOptions: {
       globals: {
         ...globals.node
@@ -44,6 +49,6 @@ export default [
     }
   },
   {
-    ignores: ["node_modules/**", "assets/**"]
+    ignores: ["node_modules/**", "dist/**", "assets/**"]
   }
-];
+);
