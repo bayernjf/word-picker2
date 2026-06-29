@@ -23,6 +23,7 @@ interface SettingsFormElements extends HTMLFormElement {
   translator: HTMLSelectElement;
   useYoudaoDict: HTMLInputElement;
   autoSpeak: HTMLInputElement;
+  fireworksEffect: HTMLSelectElement;
   maxCacheSize: HTMLInputElement;
   syncEnabled: HTMLInputElement;
   rememberDevice7Days: HTMLInputElement;
@@ -62,6 +63,7 @@ async function loadSettings(): Promise<void> {
     (form as SettingsFormElements).translator.value = settings.translator || "free";
     (form as SettingsFormElements).useYoudaoDict.checked = settings.useYoudaoDict !== false;
     (form as SettingsFormElements).autoSpeak.checked = Boolean(settings.autoSpeak);
+    (form as SettingsFormElements).fireworksEffect.value = settings.fireworksEffect || "css";
     (form as SettingsFormElements).maxCacheSize.value = String(settings.maxCacheSize || 200);
     (form as SettingsFormElements).syncEnabled.checked = settings.syncEnabled !== false;
     (form as SettingsFormElements).rememberDevice7Days.checked = Boolean(settings.rememberDevice7Days);
@@ -184,6 +186,7 @@ async function handleSubmit(event: Event): Promise<void> {
     translator: (form as SettingsFormElements).translator.value,
     useYoudaoDict: (form as SettingsFormElements).useYoudaoDict.checked,
     autoSpeak: (form as SettingsFormElements).autoSpeak.checked,
+    fireworksEffect: (form as SettingsFormElements).fireworksEffect.value as "canvas" | "css" | "none",
     maxCacheSize: clampNumber((form as SettingsFormElements).maxCacheSize.value, SETTINGS_LIMITS.CACHE_SIZE_MIN, SETTINGS_LIMITS.CACHE_SIZE_MAX, SETTINGS_LIMITS.CACHE_SIZE_DEFAULT),
     syncEnabled: (form as SettingsFormElements).syncEnabled.checked,
     rememberDevice7Days: (form as SettingsFormElements).rememberDevice7Days.checked,

@@ -50,6 +50,7 @@ export interface Settings {
   syncBaseUrl: string;
   pairingCode: string;
   syncToken: string;
+  fireworksEffect: "canvas" | "css" | "none";
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -64,6 +65,7 @@ export const DEFAULT_SETTINGS: Settings = {
   syncBaseUrl: "http://localhost:3001",
   pairingCode: "",
   syncToken: "",
+  fireworksEffect: "css",
 };
 
 const STORAGE_KEYS = {
