@@ -9,16 +9,21 @@
     "lint:fix": "eslint . --fix",
     "test": "vitest run",
     "test:watch": "vitest",
-    "build:dict": "node scripts/build-dict.js --limit=50000",
-    "pack": "node scripts/pack.js",
+    "build:ts": "tsc -p tsconfig.extension.json && tsc -p tsconfig.scripts.json",
+    "build:dict": "npm run build:ts && node dist/scripts/build-dict.js --limit=50000",
+    "pack": "npm run build:ts && node dist/scripts/pack.js",
     "release": "npm run build:dict && npm run pack"
   },
   "author": "Trae GPT-5.4",
   "license": "MIT",
   "devDependencies": {
     "@eslint/js": "^9.13.0",
+    "@types/chrome": "^0.2.0",
+    "@types/node": "^26.0.1",
     "eslint": "^9.13.0",
     "globals": "^15.11.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.62.0",
     "vitest": "^2.1.3"
   }
 }

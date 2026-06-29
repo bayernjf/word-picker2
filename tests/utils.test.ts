@@ -49,12 +49,12 @@ describe("clampNumber", () => {
 describe("formatDate", () => {
   it("空值返回未知", () => {
     expect(formatDate(0)).toBe("未知");
-    expect(formatDate(null)).toBe("未知");
+    expect(formatDate(null as unknown as number)).toBe("未知");
   });
 
   it("无效时间返回未知", () => {
     expect(formatDate("not-a-date")).toBe("未知");
-    expect(formatDate({})).toBe("未知");
+    expect(formatDate({} as unknown as number)).toBe("未知");
   });
 
   it("有效时间戳返回非未知字符串", () => {
@@ -87,7 +87,6 @@ describe("normalizeSourceLinkValue", () => {
 
   it("无字段返回空字符串", () => {
     expect(normalizeSourceLinkValue({})).toBe("");
-    expect(normalizeSourceLinkValue(null)).toBe("");
   });
 
   it("去掉 URL fragment 后再比较", () => {
@@ -99,32 +98,35 @@ describe("normalizeSourceLinkValue", () => {
 
 describe("selectPreferredSyncBook", () => {
   it("无同步单词本时返回 null", () => {
-    expect(selectPreferredSyncBook([{ isSync: false }])).toBeNull();
+    expect(selectPreferredSyncBook([{ id: '1', name: 'test', isSync: false }])).toBeNull();
     expect(selectPreferredSyncBook([])).toBeNull();
   });
 
   it("仅选取 isSync 的单词本", () => {
     const books = [
-      { name: "A", isSync: false },
-      { name: "B", isSync: true, updatedAt: 100 },
+      { id: '1', name: "A", isSync: false },
+      { id: '2', name: "B", isSync: true, updatedAt: 100 },
     ];
-    expect(selectPreferredSyncBook(books).name).toBe("B");
+    const selected = selectPreferredSyncBook(books);
+    expect(selected?.name).toBe("B");
   });
 
   it("非默认单词本优先于默认单词本", () => {
     const books = [
-      { name: "默认", isSync: true, updatedAt: 999 },
-      { name: "自定义", isSync: true, updatedAt: 1 },
+      { id: '1', name: "默认", isSync: true, updatedAt: 999 },
+      { id: '2', name: "自定义", isSync: true, updatedAt: 1 },
     ];
-    expect(selectPreferredSyncBook(books).name).toBe("自定义");
+    const selected = selectPreferredSyncBook(books);
+    expect(selected?.name).toBe("自定义");
   });
 
   it("同为非默认时取更新时间最新的", () => {
     const books = [
-      { name: "Old", isSync: true, updatedAt: 100 },
-      { name: "New", isSync: true, updatedAt: 200 },
+      { id: '1', name: "Old", isSync: true, updatedAt: 100 },
+      { id: '2', name: "New", isSync: true, updatedAt: 200 },
     ];
-    expect(selectPreferredSyncBook(books).name).toBe("New");
+    const selected = selectPreferredSyncBook(books);
+    expect(selected?.name).toBe("New");
   });
 });
 

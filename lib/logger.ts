@@ -1,4 +1,6 @@
-const LEVEL_PRIORITY = {
+type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+const LEVEL_PRIORITY: Record<LogLevel, number> = {
   debug: 0,
   info: 1,
   warn: 2,
@@ -7,10 +9,10 @@ const LEVEL_PRIORITY = {
 
 const STORAGE_KEY = 'wordcatcher-log-level';
 
-function getMinLevel() {
+function getMinLevel(): LogLevel {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved && saved in LEVEL_PRIORITY) return saved;
+    if (saved && saved in LEVEL_PRIORITY) return saved as LogLevel;
   } catch {
     // ignore
   }
@@ -19,11 +21,11 @@ function getMinLevel() {
   return 'warn';
 }
 
-function isLevelEnabled(level) {
+function isLevelEnabled(level: LogLevel): boolean {
   return LEVEL_PRIORITY[level] >= LEVEL_PRIORITY[getMinLevel()];
 }
 
-function formatTime() {
+function formatTime(): string {
   const now = new Date();
   return (
     now.toLocaleTimeString('zh-CN', { hour12: false }) +
@@ -32,7 +34,7 @@ function formatTime() {
   );
 }
 
-function formatArgs(args) {
+function formatArgs(args: unknown[]): unknown[] {
   return args.map((arg) => {
     if (arg instanceof Error) {
       return arg.stack || arg.message;
@@ -48,34 +50,34 @@ function formatArgs(args) {
   });
 }
 
-class Logger {
-  constructor(namespace) {
+export class Logger {
+  private ns: string;
+
+  constructor(namespace: string) {
     this.ns = namespace;
   }
 
-  debug(...args) {
+  debug(...args: unknown[]): void {
     if (!isLevelEnabled('debug')) return;
     console.debug(`[${formatTime()}] [${this.ns}] [DEBUG]`, ...formatArgs(args));
   }
 
-  info(...args) {
+  info(...args: unknown[]): void {
     if (!isLevelEnabled('info')) return;
     console.info(`[${formatTime()}] [${this.ns}] [INFO]`, ...formatArgs(args));
   }
 
-  warn(...args) {
+  warn(...args: unknown[]): void {
     if (!isLevelEnabled('warn')) return;
     console.warn(`[${formatTime()}] [${this.ns}] [WARN]`, ...formatArgs(args));
   }
 
-  error(...args) {
+  error(...args: unknown[]): void {
     if (!isLevelEnabled('error')) return;
     console.error(`[${formatTime()}] [${this.ns}] [ERROR]`, ...formatArgs(args));
   }
 }
 
-export function createLogger(namespace) {
+export function createLogger(namespace: string): Logger {
   return new Logger(namespace);
 }
-
-export { Logger };

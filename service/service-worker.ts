@@ -12,6 +12,10 @@ import {
   saveSettings,
   saveWords,
   searchWords,
+  getSyncVersion,
+  setSyncVersion,
+  Word,
+  Settings,
 } from '../lib/storage.js';
 import { translateWord } from '../lib/translator.js';
 import { ensureDictImported, lookupOffline } from '../lib/offlineDict.js';
@@ -19,10 +23,13 @@ import {
   selectPreferredSyncBook,
   normalizeContextValue,
   normalizeSourceLinkValue,
+  Book,
 } from '../lib/utils.js';
 import { DEFAULT_SYNC_BASE_URL } from '../lib/constants.js';
 import { MESSAGE_TYPES } from '../lib/messaging.js';
 import { createLogger } from '../lib/logger.js';
+import type { TranslationResult } from '../lib/translator.js';
+import type { OfflineTranslationResult } from '../lib/offlineDict.js';
 
 const logger = createLogger('service-worker');
 
@@ -65,7 +72,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return true;
 });
 
-async function handleMessage(message) {
+interface Message {
+  type: string;
+  [key: string]: unknown;
+}
+
+async function handleMessage(message: Message): Promise<any> {
   await ensureDefaults();
   logger.debug('handleMessage', { type: message?.type });
 
@@ -73,41 +85,41 @@ async function handleMessage(message) {
     case MESSAGE_TYPES.SAVE_WORD:
       return handleSaveWord(message.entry || message.word);
     case MESSAGE_TYPES.DELETE_WORD:
-      return handleDeleteWord(message.id || message.wordId);
+      return handleDeleteWord(String(message.id || message.wordId));
     case MESSAGE_TYPES.GET_WORDS:
       await syncForRead();
-      return { words: await searchWords(message.query || '') };
+      return { words: await searchWords(message.query as string || '') };
     case MESSAGE_TYPES.GET_BOOKS:
       await syncForRead();
       return { books: await getBooks() };
     case MESSAGE_TYPES.GET_BOOK_WORDS:
       await syncForRead();
-      return { words: await getWordsByBook(message.bookId, message.query || '') };
+      return { words: await getWordsByBook(message.bookId as string, message.query as string || '') };
     case MESSAGE_TYPES.EXPORT_WORDS:
-      return handleExportWords(message.format || 'json');
+      return handleExportWords(message.format as string, Array.isArray(message.words) ? message.words as Word[] : []);
     case MESSAGE_TYPES.GET_SETTINGS:
       return { settings: await getSettings() };
     case MESSAGE_TYPES.SAVE_SETTINGS:
-      return { settings: await saveSettings(message.settings || {}) };
+      return { settings: await saveSettings(message.settings as Partial<Settings>) };
     case MESSAGE_TYPES.SYNC_NOW:
     case MESSAGE_TYPES.TRIGGER_SYNC:
       return { sync: await handleSyncNow() };
     case MESSAGE_TYPES.GET_SYNC_STATUS:
       return handleGetSyncStatus();
     case MESSAGE_TYPES.AUTH_LOGIN:
-      return handleAuthLogin(message.email, message.password, message.baseUrl);
+      return handleAuthLogin(message.email as string, message.password as string, message.baseUrl as string);
     case MESSAGE_TYPES.AUTH_REGISTER:
-      return handleAuthRegister(message.email, message.password, message.baseUrl);
+      return handleAuthRegister(message.email as string, message.password as string, message.baseUrl as string);
     case MESSAGE_TYPES.AUTH_LOGOUT:
       return handleAuthLogout();
     case MESSAGE_TYPES.AUTH_STATUS:
       return handleAuthStatus();
     case MESSAGE_TYPES.AUTH_SET_REMEMBER:
-      return handleAuthSetRemember(message.remember);
+      return handleAuthSetRemember(message.remember as boolean);
     case MESSAGE_TYPES.AUTH_GET_CREDENTIALS:
       return handleAuthGetCredentials();
     case MESSAGE_TYPES.TRANSLATE:
-      return handleTranslate(message.word);
+      return handleTranslate(message.word as string);
     case MESSAGE_TYPES.PING:
       return { pong: true };
     default:
@@ -115,7 +127,44 @@ async function handleMessage(message) {
   }
 }
 
-async function handleSaveWord(entry) {
+interface AuthData {
+  accessToken: string;
+  refreshToken: string;
+  user?: { email?: string };
+  baseUrl: string;
+  lastSyncAt?: number;
+  expiresAt?: number | null;
+}
+
+interface SyncQueueEntry extends Word {
+  id?: string;
+}
+
+interface ServerWordPayload {
+  word: string;
+  frequency: number;
+  translation: string;
+  time_added: string;
+  time_updated: string;
+  contexts: Word['contexts'];
+  phonetic: string;
+  part_of_speech: string;
+  definition: string;
+  chinese_translation: string;
+  synonyms: string[];
+  examples: Array<{ en: string; zh: string }>;
+  usage_history: unknown[];
+  level: string;
+  familiarity: number;
+  book_id?: string;
+  meta: {
+    sourceUrl: string;
+    sourceTitle: string;
+    createdAt: number;
+  };
+}
+
+async function handleSaveWord(entry: any): Promise<any> {
   if (!entry?.word) {
     throw new Error('单词内容不能为空');
   }
@@ -126,7 +175,7 @@ async function handleSaveWord(entry) {
 
   const auth = await getAuthData();
   const settings = await getSettings();
-  
+
   // 检查是否启用了同步且已登录
   const syncEnabled = settings.syncEnabled !== false;
   const isLoggedIn = Boolean(auth?.accessToken && auth?.refreshToken);
@@ -156,8 +205,8 @@ async function handleSaveWord(entry) {
       return true;
     }
 
-    return incomingContexts.every((incomingContext) =>
-      existingContexts.some((existingContext) =>
+    return incomingContexts.every((incomingContext: any) =>
+      existingContexts.some((existingContext: any) =>
         normalizeContextValue(existingContext?.context) === normalizeContextValue(incomingContext?.context) &&
         normalizeSourceLinkValue(existingContext) === normalizeSourceLinkValue(incomingContext)
       )
@@ -186,7 +235,7 @@ async function handleSaveWord(entry) {
       sync: { ok: true, skipped: true, queueSize: 0 },
     };
   }
-  
+
   // 只有在已登录时才尝试同步：本地已写入成功，远端推送放到后台异步进行，
   // 不阻塞「添加成功」提示。词条已入队并持久化，后台失败也会在后续同步重试。
   if (isLoggedIn) {
@@ -213,7 +262,7 @@ async function handleSaveWord(entry) {
   };
 }
 
-async function handleDeleteWord(id) {
+async function handleDeleteWord(id: string): Promise<any> {
   if (!id) {
     throw new Error('缺少单词 id');
   }
@@ -232,8 +281,7 @@ async function handleDeleteWord(id) {
   };
 }
 
-async function handleExportWords(format) {
-  const words = await getWords();
+async function handleExportWords(format: string, words: Word[]): Promise<any> {
   const normalized = String(format || 'json').toLowerCase();
 
   if (normalized === 'csv') {
@@ -251,7 +299,7 @@ async function handleExportWords(format) {
   };
 }
 
-function toCsv(words) {
+function toCsv(words: Word[]): string {
   const headers = ['word', 'frequency', 'translation', 'timeAdded', 'timeUpdated', 'contextCount'];
   const lines = [headers.join(',')];
   words.forEach((word) => {
@@ -262,7 +310,7 @@ function toCsv(words) {
           if (header === 'contextCount') {
             return csvEscape(contextCount);
           }
-          return csvEscape(word[header] ?? word._legacy?.[header] ?? '');
+          return csvEscape((word as any)[header] ?? word._legacy?.[header] ?? '');
         })
         .join(',')
     );
@@ -270,21 +318,21 @@ function toCsv(words) {
   return lines.join('\n');
 }
 
-function csvEscape(value) {
+function csvEscape(value: unknown): string {
   const text = String(value).replace(/"/g, '""');
   return `"${text}"`;
 }
 
-async function handleSyncNow() {
+async function handleSyncNow(): Promise<any> {
   return flushSyncQueue(await getSettings());
 }
 
-async function handleGetSyncStatus() {
+async function handleGetSyncStatus(): Promise<any> {
   const auth = await getAuthData();
   const deviceId = await ensureDeviceId();
   const syncQueue = await getSyncQueue();
   const deleteQueue = await getDeleteQueue();
-  const loggedIn = Boolean(auth?.accessToken && auth?.refreshToken) && !isAuthExpired(auth);
+  const loggedIn = Boolean(auth?.accessToken && auth?.refreshToken) && auth && !isAuthExpired(auth);
 
   return {
     deviceId,
@@ -297,14 +345,14 @@ async function handleGetSyncStatus() {
   };
 }
 
-async function setupAlarms() {
+async function setupAlarms(): Promise<void> {
   const existing = await chrome.alarms.get('sync-words');
   if (!existing) {
     await chrome.alarms.create('sync-words', { periodInMinutes: 3 });
   }
 }
 
-async function ensureDeviceId() {
+async function ensureDeviceId(): Promise<string> {
   const current = await chrome.storage.local.get([STORAGE_DEVICE_ID]);
   const existing = typeof current?.[STORAGE_DEVICE_ID] === 'string' ? current[STORAGE_DEVICE_ID].trim() : '';
   if (existing) {
@@ -317,33 +365,33 @@ async function ensureDeviceId() {
   return next;
 }
 
-async function getQueue(key) {
+async function getQueue(key: string): Promise<any[]> {
   const current = await chrome.storage.local.get([key]);
   return Array.isArray(current?.[key]) ? current[key] : [];
 }
 
-async function setQueue(key, queue) {
+async function setQueue(key: string, queue: any[]): Promise<any[]> {
   await chrome.storage.local.set({ [key]: queue });
   return queue;
 }
 
-async function getSyncQueue() {
+async function getSyncQueue(): Promise<SyncQueueEntry[]> {
   return getQueue(STORAGE_SYNC_QUEUE);
 }
 
-async function setSyncQueue(queue) {
+async function setSyncQueue(queue: SyncQueueEntry[]): Promise<SyncQueueEntry[]> {
   return setQueue(STORAGE_SYNC_QUEUE, queue);
 }
 
-async function getDeleteQueue() {
+async function getDeleteQueue(): Promise<string[]> {
   return getQueue(STORAGE_DELETE_QUEUE);
 }
 
-async function setDeleteQueue(queue) {
+async function setDeleteQueue(queue: string[]): Promise<string[]> {
   return setQueue(STORAGE_DELETE_QUEUE, queue);
 }
 
-async function enqueueSyncEntry(entry) {
+async function enqueueSyncEntry(entry: SyncQueueEntry): Promise<void> {
   if (!entry?.word) {
     return;
   }
@@ -358,7 +406,7 @@ async function enqueueSyncEntry(entry) {
   await setSyncQueue([nextEntry, ...dedupedQueue].slice(0, 500));
 }
 
-async function enqueueDelete(wordId) {
+async function enqueueDelete(wordId: string): Promise<void> {
   const queue = await getDeleteQueue();
   if (queue.includes(wordId)) {
     return;
@@ -366,7 +414,7 @@ async function enqueueDelete(wordId) {
   await setDeleteQueue([wordId, ...queue].slice(0, 500));
 }
 
-function normalizeBaseUrl(settings, auth) {
+function normalizeBaseUrl(settings: Settings, auth: AuthData | null): string {
   const authBaseUrl = typeof auth?.baseUrl === 'string' ? auth.baseUrl.trim() : '';
   if (authBaseUrl) {
     return authBaseUrl.replace(/\/+$/, '');
@@ -375,13 +423,13 @@ function normalizeBaseUrl(settings, auth) {
   return (settingsBaseUrl || DEFAULT_SYNC_BASE_URL).replace(/\/+$/, '');
 }
 
-function normalizeWordValue(word) {
+function normalizeWordValue(word: unknown): string {
   return String(word || '').trim().toLowerCase();
 }
 
 // 规范化首字母大写的普通英文单词：仅 "Hello" 这类首字母大写、其余非全大写的单词转小写首字母；
 // 全大写缩写（如 API、NASA）保持不变。
-function lowercaseFirstLetter(word) {
+function lowercaseFirstLetter(word: string): string {
   const text = String(word || '');
   if (!text) {
     return text;
@@ -398,16 +446,16 @@ function lowercaseFirstLetter(word) {
   return text;
 }
 
-function normalizeBookValue(bookId) {
+function normalizeBookValue(bookId: unknown): string {
   const trimmed = String(bookId || '').trim();
   return trimmed || '__sync_book__';
 }
 
-function getQueuedWordKey(entry) {
+function getQueuedWordKey(entry: SyncQueueEntry): string {
   return `${normalizeWordValue(entry?.word)}::${normalizeBookValue(entry?.bookId)}`;
 }
 
-async function syncForRead(settingsOverride) {
+async function syncForRead(settingsOverride?: Settings): Promise<void> {
   const auth = await getAuthData();
   if (!auth?.accessToken || !auth?.refreshToken) {
     return;
@@ -420,7 +468,7 @@ async function syncForRead(settingsOverride) {
   await flushSyncQueue(settings);
 }
 
-async function pullChanges(auth, settings) {
+async function pullChanges(auth: AuthData, settings: Settings): Promise<void> {
   const baseUrl = normalizeBaseUrl(settings, auth);
   const token = auth.accessToken;
   logger.debug('pullChanges started', { baseUrl });
@@ -451,7 +499,7 @@ async function pullChanges(auth, settings) {
   logger.info('pullChanges success', { books: bookCount, words: wordCount });
 }
 
-function mapServerBookToLocal(book) {
+function mapServerBookToLocal(book: any): Book {
   return {
     id: book.id,
     name: book.name || '默认',
@@ -464,7 +512,7 @@ function mapServerBookToLocal(book) {
   };
 }
 
-function mapServerWordToLocal(word) {
+function mapServerWordToLocal(word: any): Word {
   const timeAdded = Date.parse(word.time_added || word.created_at) || Date.now();
   const timeUpdated = Date.parse(word.time_updated || word.updated_at) || timeAdded;
   const examples = Array.isArray(word.examples) ? word.examples : [];
@@ -490,7 +538,7 @@ function mapServerWordToLocal(word) {
   };
 }
 
-function mapLocalWordToServer(word) {
+function mapLocalWordToServer(word: Word): ServerWordPayload {
   const timeAdded = word.timeAdded || word._legacy?.createdAt || Date.now();
   const timeUpdated = word.timeUpdated || timeAdded;
   return {
@@ -526,7 +574,7 @@ function mapLocalWordToServer(word) {
   };
 }
 
-async function pushDeletes(auth, settings) {
+async function pushDeletes(auth: AuthData, settings: Settings): Promise<{ ok: boolean; processed: number }> {
   const deleteQueue = await getDeleteQueue();
   if (deleteQueue.length === 0) {
     return { ok: true, processed: 0 };
@@ -554,17 +602,17 @@ async function pushDeletes(auth, settings) {
   return { ok: true, processed: deleteQueue.length };
 }
 
-async function pushWords(auth, settings) {
+async function pushWords(auth: AuthData, settings: Settings): Promise<{ ok: boolean; processed: number; error?: string; queueSize: number }> {
   const syncQueue = await getSyncQueue();
   if (syncQueue.length === 0) {
-    return { ok: true, processed: 0 };
+    return { ok: true, processed: 0, queueSize: 0 };
   }
   logger.debug('pushWords started', { queueSize: syncQueue.length });
 
   const baseUrl = normalizeBaseUrl(settings, auth);
 
   // 从缓存的单词本中查找同步单词本，为缺少 bookId 的条目自动分配
-  let syncBook = null;
+  let syncBook: Book | null = null;
   const cachedBooks = await getBooks();
   syncBook = selectPreferredSyncBook(cachedBooks);
 
@@ -577,16 +625,16 @@ async function pushWords(auth, settings) {
       if (booksRes.ok) {
         const serverBooks = await booksRes.json();
         const serverSyncBook = Array.isArray(serverBooks)
-          ? serverBooks.find((b) => b.is_sync)
+          ? serverBooks.find((b: any) => b.is_sync)
           : null;
         if (serverSyncBook) {
-          syncBook = { id: serverSyncBook.id, isSync: true };
+          syncBook = { id: serverSyncBook.id, name: serverSyncBook.name, isSync: true };
           // 同时更新本地缓存
           await saveBooks(serverBooks.map(mapServerBookToLocal));
         }
       }
     } catch (err) {
-      logger.warn('[pushWords] 无法从服务器获取单词本:', err.message);
+      logger.warn('[pushWords] 无法从服务器获取单词本:', (err as Error).message);
     }
   }
 
@@ -610,11 +658,11 @@ async function pushWords(auth, settings) {
         list[index] = item;
       }
       return list;
-    }, []); // 合并同一单词/单词本的重复推送，避免服务端 upsert 冲突。
+    }, [] as ServerWordPayload[]); // 合并同一单词/单词本的重复推送，避免服务端 upsert 冲突。
 
   if (payload.length === 0) {
     logger.warn('[pushWords] 无法同步单词：没有可用的 book_id，已缓存待下次同步');
-    return { ok: false, error: 'no_book_id', queueSize: syncQueue.length };
+    return { ok: false, processed: 0, error: 'no_book_id', queueSize: syncQueue.length };
   }
 
   logger.info(`[pushWords] 准备同步 ${payload.length} 个单词，book_id: ${payload[0]?.book_id}`);
@@ -651,10 +699,20 @@ async function pushWords(auth, settings) {
     logger.info(`[pushWords] 同步完成，清除 ${syncedWordKeys.size} 条，队列剩余 ${Math.max(0, syncQueue.length - syncedWordKeys.size)} 条`);
   }
 
-  return { ok: true, processed: payload.length };
+  return { ok: true, processed: payload.length, queueSize: (await getSyncQueue()).length };
 }
 
-async function flushSyncQueue(settings) {
+interface FlushResult {
+  ok: boolean;
+  skipped?: boolean;
+  expired?: boolean;
+  loggedOut?: boolean;
+  processed?: number;
+  queueSize: number;
+  error?: string;
+}
+
+async function flushSyncQueue(settings: Settings): Promise<FlushResult> {
   const auth = await getAuthData();
   const syncQueue = await getSyncQueue();
   const deleteQueue = await getDeleteQueue();
@@ -689,7 +747,7 @@ async function flushSyncQueue(settings) {
       await pushWords(currentAuth, settings);
       await pullChanges(currentAuth, settings);
     } catch (error) {
-      if (String(error?.message || error) !== 'unauthorized') {
+      if (String((error as any)?.message || error) !== 'unauthorized') {
         throw error;
       }
 
@@ -699,9 +757,9 @@ async function flushSyncQueue(settings) {
         if (refreshed.authInvalid) {
           await setAuthData(null);
           await setCurrentUserEmail(null);
-          return { ok: false, error: refreshed.error || 'token_refresh_failed', loggedOut: true, queueSize: (await getSyncQueue()).length };
+          return { ok: false, error: refreshed.error || 'token_refresh_failed', loggedOut: true, queueSize };
         }
-        return { ok: false, skipped: true, error: refreshed.error || 'token_refresh_temporary', queueSize: (await getSyncQueue()).length };
+        return { ok: false, skipped: true, error: refreshed.error || 'token_refresh_temporary', queueSize };
       }
 
       currentAuth = {
@@ -736,13 +794,23 @@ async function flushSyncQueue(settings) {
   }
 }
 
-async function getAuthData() {
-  const data = await chrome.storage.local.get([STORAGE_AUTH]);
-  const auth = data?.[STORAGE_AUTH];
-  return auth && typeof auth === 'object' ? auth : null;
+function isAuthData(value: unknown): value is AuthData {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    typeof (value as Partial<AuthData>).accessToken === 'string' &&
+    typeof (value as Partial<AuthData>).refreshToken === 'string' &&
+    typeof (value as Partial<AuthData>).baseUrl === 'string'
+  );
 }
 
-async function setAuthData(auth) {
+async function getAuthData(): Promise<AuthData | null> {
+  const data = await chrome.storage.local.get([STORAGE_AUTH]);
+  const auth = data?.[STORAGE_AUTH];
+  return isAuthData(auth) ? auth : null;
+}
+
+async function setAuthData(auth: AuthData | null): Promise<void> {
   await chrome.storage.local.set({ [STORAGE_AUTH]: auth });
 }
 
@@ -752,14 +820,30 @@ const REMEMBER_DEVICE_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 // 本地记住的登录凭证（用于回填登录表单）
 const STORAGE_REMEMBERED_CREDENTIALS = 'rememberedCredentials';
 
-async function getRememberedCredentials() {
+interface RememberedCredentials {
+  email: string;
+  password: string;
+  savedAt: number;
+}
+
+function isRememberedCredentials(value: unknown): value is RememberedCredentials {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    typeof (value as Partial<RememberedCredentials>).email === 'string' &&
+    typeof (value as Partial<RememberedCredentials>).password === 'string' &&
+    typeof (value as Partial<RememberedCredentials>).savedAt === 'number'
+  );
+}
+
+async function getRememberedCredentials(): Promise<RememberedCredentials | null> {
   const data = await chrome.storage.local.get([STORAGE_REMEMBERED_CREDENTIALS]);
   const cred = data?.[STORAGE_REMEMBERED_CREDENTIALS];
-  return cred && typeof cred === 'object' ? cred : null;
+  return isRememberedCredentials(cred) ? cred : null;
 }
 
 // 保存登录凭证（email 始终保留以便回填；password 仅在勾选记住时保留）
-async function saveRememberedCredentials(email, password, remember) {
+async function saveRememberedCredentials(email: string, password: string, remember: boolean): Promise<void> {
   await chrome.storage.local.set({
     [STORAGE_REMEMBERED_CREDENTIALS]: {
       email: email || '',
@@ -770,17 +854,17 @@ async function saveRememberedCredentials(email, password, remember) {
 }
 
 // 计算登录态过期时间：勾选“记住7天”则 7 天后过期，否则不设过期（长期保持直到手动登出）
-function computeAuthExpiry(remember) {
+function computeAuthExpiry(remember: boolean): number | null {
   return remember ? Date.now() + REMEMBER_DEVICE_DURATION_MS : null;
 }
 
 // 判断登录态是否已过期
-function isAuthExpired(auth) {
-  return Boolean(auth?.expiresAt) && Date.now() > auth.expiresAt;
+function isAuthExpired(auth: AuthData): boolean {
+  return typeof auth.expiresAt === 'number' && Date.now() > auth.expiresAt;
 }
 
 // 勾选/取消“在此设备记住7天”时，更新当前登录态的过期时间
-async function handleAuthSetRemember(remember) {
+async function handleAuthSetRemember(remember: boolean): Promise<{ ok: boolean }> {
   const auth = await getAuthData();
   if (!auth?.accessToken) {
     return { ok: true };
@@ -799,7 +883,7 @@ async function handleAuthSetRemember(remember) {
 }
 
 // 获取回填用的登录凭证：7天内返回邮箱+密码，超过7天只返回邮箱
-async function handleAuthGetCredentials() {
+async function handleAuthGetCredentials(): Promise<{ ok: boolean; email: string; password: string }> {
   const cred = await getRememberedCredentials();
   if (!cred) {
     return { ok: true, email: '', password: '' };
@@ -818,17 +902,18 @@ async function handleAuthGetCredentials() {
 // 存储当前登录用户的唯一标识（用于检测用户切换）
 const STORAGE_CURRENT_USER_EMAIL = 'currentUserEmail';
 
-async function getCurrentUserEmail() {
+async function getCurrentUserEmail(): Promise<string | null> {
   const data = await chrome.storage.local.get([STORAGE_CURRENT_USER_EMAIL]);
-  return data[STORAGE_CURRENT_USER_EMAIL] || null;
+  const email = data[STORAGE_CURRENT_USER_EMAIL];
+  return typeof email === 'string' ? email : null;
 }
 
-async function setCurrentUserEmail(email) {
+async function setCurrentUserEmail(email: string | null): Promise<void> {
   await chrome.storage.local.set({ [STORAGE_CURRENT_USER_EMAIL]: email });
 }
 
 // 清空用户数据（在切换用户或登出时调用）
-async function clearUserData() {
+async function clearUserData(): Promise<void> {
   await chrome.storage.local.remove([
     'words',
     'books',
@@ -839,19 +924,19 @@ async function clearUserData() {
   ]);
 }
 
-async function handleAuthLogin(email, password, baseUrl) {
+async function handleAuthLogin(email: string, password: string, baseUrl: string): Promise<any> {
   const normalizedUrl = (baseUrl || 'http://localhost:3001').trim().replace(/\/+$/, '');
   const result = await doLoginOrRegister(normalizedUrl, 'login', email, password);
-  
+
   if (result.ok && result.accessToken && result.refreshToken) {
     const previousEmail = await getCurrentUserEmail();
     const newEmail = result.user?.email || email;
-    
+
     // 如果用户切换了账号，清空旧数据
     if (previousEmail && previousEmail !== newEmail) {
       await clearUserData();
     }
-    
+
     await setCurrentUserEmail(newEmail);
     const settings = await getSettings();
     await setAuthData({
@@ -871,19 +956,19 @@ async function handleAuthLogin(email, password, baseUrl) {
   return result;
 }
 
-async function handleAuthRegister(email, password, baseUrl) {
+async function handleAuthRegister(email: string, password: string, baseUrl: string): Promise<any> {
   const normalizedUrl = (baseUrl || 'http://localhost:3001').trim().replace(/\/+$/, '');
   const result = await doLoginOrRegister(normalizedUrl, 'register', email, password);
-  
+
   if (result.ok && result.accessToken && result.refreshToken) {
     const previousEmail = await getCurrentUserEmail();
     const newEmail = result.user?.email || email;
-    
+
     // 如果用户切换了账号，清空旧数据
     if (previousEmail && previousEmail !== newEmail) {
       await clearUserData();
     }
-    
+
     await setCurrentUserEmail(newEmail);
     const settings = await getSettings();
     await setAuthData({
@@ -903,7 +988,7 @@ async function handleAuthRegister(email, password, baseUrl) {
   return result;
 }
 
-async function handleAuthLogout() {
+async function handleAuthLogout(): Promise<{ ok: boolean }> {
   await setAuthData(null);
   await setCurrentUserEmail(null);
   // 登出时清空数据，但注意不要清空设置
@@ -911,7 +996,7 @@ async function handleAuthLogout() {
   return { ok: true };
 }
 
-async function handleAuthStatus() {
+async function handleAuthStatus(): Promise<any> {
   const auth = await getAuthData();
   // 登录态已过期：清除并视为未登录
   if (auth && isAuthExpired(auth)) {
@@ -928,7 +1013,7 @@ async function handleAuthStatus() {
   };
 }
 
-async function doLoginOrRegister(baseUrl, type, email, password) {
+async function doLoginOrRegister(baseUrl: string, type: 'login' | 'register', email: string, password: string): Promise<any> {
   const endpoint = type === 'login' ? '/api/v1/auth/login' : '/api/v1/auth/register';
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10000);
@@ -964,7 +1049,7 @@ async function doLoginOrRegister(baseUrl, type, email, password) {
   }
 }
 
-async function doRefreshToken(baseUrl, refreshToken) {
+async function doRefreshToken(baseUrl: string, refreshToken: string): Promise<any> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10000);
 
@@ -1002,7 +1087,7 @@ async function doRefreshToken(baseUrl, refreshToken) {
   }
 }
 
-async function handleTranslate(word) {
+async function handleTranslate(word: string): Promise<{ translation: TranslationResult | OfflineTranslationResult; fromCache?: boolean; fromOffline?: boolean }> {
   if (!word || !word.trim()) {
     throw new Error('待翻译单词不能为空');
   }
@@ -1043,7 +1128,7 @@ async function handleTranslate(word) {
 }
 
 // LRU 淘汰：超出上限时删除最久未访问的条目
-function pruneCache(cache, maxSize) {
+function pruneCache(cache: { [key: string]: { lastAccess?: number } }, maxSize: number): void {
   const keys = Object.keys(cache);
   if (keys.length <= maxSize) {
     return;

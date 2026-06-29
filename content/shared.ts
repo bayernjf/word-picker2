@@ -1,5 +1,12 @@
+interface Window {
+  __WordCatcherShared: {
+    escapeHtml: (value: unknown) => string;
+    sendMessage: (message: object) => Promise<any>;
+  };
+}
+
 (() => {
-  function escapeHtml(value) {
+  function escapeHtml(value: unknown): string {
     return String(value || "")
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
@@ -8,9 +15,9 @@
       .replace(/'/g, "&#39;");
   }
 
-  function sendMessage(message) {
+  function sendMessage(message: object): Promise<any> {
     return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage(message, (response) => {
+      chrome.runtime.sendMessage(message, (response: any) => {
         if (chrome.runtime.lastError) {
           reject(new Error(chrome.runtime.lastError.message));
           return;
@@ -26,6 +33,6 @@
 
   window.__WordCatcherShared = {
     escapeHtml,
-    sendMessage
+    sendMessage,
   };
 })();
