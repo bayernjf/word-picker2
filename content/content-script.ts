@@ -1237,8 +1237,9 @@
     }, 220);
 
     const tick = (): void => {
-      // 半透明覆盖产生拖尾，而非清屏
-      ctx.fillStyle = "rgba(0, 0, 0, 0.18)";
+      // destination-out 半透明擦除产生拖尾，canvas 背景保持透明，避免全屏变黑
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.fillStyle = "rgba(0, 0, 0, 0.2)";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.globalCompositeOperation = "lighter";
 
