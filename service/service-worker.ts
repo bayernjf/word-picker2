@@ -3,12 +3,10 @@ import {
   deleteWordById,
   ensureDefaults,
   getBooks,
-  getCacheMap,
   getSettings,
   getWords,
   getWordsByBook,
   saveBooks,
-  saveCacheMap,
   saveSettings,
   saveWords,
   searchWords,
@@ -19,13 +17,14 @@ import {
 } from '../lib/storage.js';
 import { translateWord } from '../lib/translator.js';
 import { ensureDictImported, lookupOffline } from '../lib/offlineDict.js';
+import { getCachedTranslation, setCachedTranslation } from '../lib/cache.js';
 import {
   selectPreferredSyncBook,
   normalizeContextValue,
   normalizeSourceLinkValue,
   Book,
 } from '../lib/utils.js';
-import { DEFAULT_SYNC_BASE_URL } from '../lib/constants.js';
+import { DEFAULT_SYNC_BASE_URL, QUEUE_MAX_LENGTH } from '../lib/constants.js';
 import { MESSAGE_TYPES } from '../lib/messaging.js';
 import { createLogger } from '../lib/logger.js';
 import type { TranslationResult } from '../lib/translator.js';
@@ -403,7 +402,7 @@ async function enqueueSyncEntry(entry: SyncQueueEntry): Promise<void> {
   };
   const nextKey = getQueuedWordKey(nextEntry);
   const dedupedQueue = queue.filter((item) => getQueuedWordKey(item) !== nextKey);
-  await setSyncQueue([nextEntry, ...dedupedQueue].slice(0, 500));
+  await setSyncQueue([nextEntry, ...dedupedQueue].slice(0, QUEUE_MAX_LENGTH));
 }
 
 async function enqueueDelete(wordId: string): Promise<void> {
@@ -411,7 +410,7 @@ async function enqueueDelete(wordId: string): Promise<void> {
   if (queue.includes(wordId)) {
     return;
   }
-  await setDeleteQueue([wordId, ...queue].slice(0, 500));
+  await setDeleteQueue([wordId, ...queue].slice(0, QUEUE_MAX_LENGTH));
 }
 
 function normalizeBaseUrl(settings: Settings, auth: AuthData | null): string {
@@ -1092,25 +1091,29 @@ async function handleTranslate(word: string): Promise<{ translation: Translation
     throw new Error('待翻译单词不能为空');
   }
   const settings = await getSettings();
-  const cacheKey = word.trim().toLowerCase();
 
   // 1. 先查缓存，命中直接返回（0 网络，秒回）
-  const cache = await getCacheMap();
-  const cached = cache[cacheKey];
-  if (cached && cached.translation) {
-    // 更新 LRU 访问时间
-    cached.lastAccess = Date.now();
-    await saveCacheMap(cache);
-    return { translation: cached.translation, fromCache: true };
+  const cached = await getCachedTranslation(word);
+  if (cached) {
+    return {
+      translation: {
+        word: cached.word,
+        meaning: cached.meaning,
+        phonetic: cached.phonetic || "",
+        exampleEn: cached.exampleEn || "",
+        exampleZh: cached.exampleZh || "",
+        note: cached.note || "",
+        provider: cached.provider,
+      },
+      fromCache: true,
+    };
   }
 
   // 2. 查内置离线词库（IndexedDB，高频词秒回，无需联网）
   await ensureDictImported();
   const offline = await lookupOffline(word);
   if (offline) {
-    cache[cacheKey] = { translation: offline, lastAccess: Date.now() };
-    pruneCache(cache, settings.maxCacheSize || 200);
-    await saveCacheMap(cache);
+    await setCachedTranslation(word, offline, settings.maxCacheSize || 200);
     return { translation: offline, fromOffline: true };
   }
 
@@ -1119,22 +1122,8 @@ async function handleTranslate(word: string): Promise<{ translation: Translation
 
   // 4. 写回缓存（仅缓存有效结果，兜底结果不缓存以便后续重试）
   if (translation && translation.provider !== 'fallback') {
-    cache[cacheKey] = { translation, lastAccess: Date.now() };
-    pruneCache(cache, settings.maxCacheSize || 200);
-    await saveCacheMap(cache);
+    await setCachedTranslation(word, translation, settings.maxCacheSize || 200);
   }
 
   return { translation };
-}
-
-// LRU 淘汰：超出上限时删除最久未访问的条目
-function pruneCache(cache: { [key: string]: { lastAccess?: number } }, maxSize: number): void {
-  const keys = Object.keys(cache);
-  if (keys.length <= maxSize) {
-    return;
-  }
-  keys
-    .sort((a, b) => (cache[a]?.lastAccess || 0) - (cache[b]?.lastAccess || 0))
-    .slice(0, keys.length - maxSize)
-    .forEach((key) => delete cache[key]);
 }
