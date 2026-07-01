@@ -10,7 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "build:ts": "tsc -p tsconfig.extension.json && tsc -p tsconfig.scripts.json",
-    "build": "npm run build:ts && node scripts/copy-static.js",
+    "build": "npm run build:ts && node dist/scripts/copy-static.js",
     "build:dict": "npm run build:ts && node dist/scripts/build-dict.js --limit=50000",
     "pack": "npm run build:ts && node dist/scripts/pack.js",
     "release": "npm run build:dict && npm run pack"
