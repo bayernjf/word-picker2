@@ -1,4 +1,4 @@
-import { escapeHtml, sendMessage, formatDate, formatSyncStatusSummary } from "../lib/utils.js";
+import { escapeHtml, sendMessage, formatDate, formatSyncStatusSummary, selectPreferredSyncBook } from "../lib/utils.js";
 import { createLogger } from "../lib/logger.js";
 import type { Book, SyncStatus } from "../lib/utils.js";
 
@@ -113,19 +113,7 @@ function renderBooks(books: Book[]): void {
   });
 
   // 优先选择同步单词本，或者恢复之前选择的
-  const syncBook = [...books]
-    .filter((book) => book?.isSync)
-    .sort((left, right) => {
-      const leftIsDefault = left.name === "默认";
-      const rightIsDefault = right.name === "默认";
-      if (leftIsDefault !== rightIsDefault) {
-        return leftIsDefault ? 1 : -1;
-      }
-
-      const leftUpdated = Number(left.updatedAt) || Number(left.createdAt) || 0;
-      const rightUpdated = Number(right.updatedAt) || Number(right.createdAt) || 0;
-      return rightUpdated - leftUpdated;
-    })[0];
+  const syncBook = selectPreferredSyncBook(books);
   if (currentBookId && books.some(b => b.id === currentBookId)) {
     bookSelect.value = currentBookId;
   } else if (syncBook) {
