@@ -42,13 +42,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   bindEvents();
 
   // 监听后台登录态变化（如 token 失效被清空），实时刷新界面
-  if (chrome?.storage?.onChanged) {
-    browser.storage.onChanged.addListener((changes, areaName) => {
-      if (areaName === "local" && changes.authData) {
-        void checkAuthAndRender();
-      }
-    });
-  }
+  browser.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === "local" && changes.authData) {
+      void checkAuthAndRender();
+    }
+  });
 });
 
 function bindEvents(): void {

@@ -1,3 +1,4 @@
+import browser from 'webextension-polyfill';
 import {
   addWord,
   deleteWordById,
@@ -59,7 +60,7 @@ browser.alarms.onAlarm.addListener(async (alarm) => {
 });
 
 browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  handleMessage(message)
+  handleMessage(message as Message)
     .then((payload) => sendResponse({ success: true, ...payload }))
     .catch((error) => {
       sendResponse({

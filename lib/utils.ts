@@ -17,18 +17,12 @@ export interface MessageResponse {
 }
 
 export function sendMessage<TResponse extends { success: boolean; error?: string } = MessageResponse>(message: object): Promise<TResponse> {
-  return new Promise((resolve, reject) => {
-    browser.runtime.sendMessage(message, (response: TResponse) => {
-      if (browser.runtime.lastError) {
-        reject(new Error(browser.runtime.lastError.message));
-        return;
-      }
-      if (!response?.success) {
-        reject(new Error(response?.error || "扩展消息请求失败"));
-        return;
-      }
-      resolve(response);
-    });
+  return browser.runtime.sendMessage(message).then((response) => {
+    const res = response as TResponse;
+    if (!res?.success) {
+      throw new Error(res?.error || "扩展消息请求失败");
+    }
+    return res;
   });
 }
 

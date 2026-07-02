@@ -99,18 +99,11 @@ function createLogger(namespace: string): Logger {
   }
 
   function sendMessage(message: object): Promise<any> {
-    return new Promise((resolve, reject) => {
-      browser.runtime.sendMessage(message, (response: any) => {
-        if (browser.runtime.lastError) {
-          reject(new Error(browser.runtime.lastError.message));
-          return;
-        }
-        if (!response?.success) {
-          reject(new Error(response?.error || "扩展消息请求失败"));
-          return;
-        }
-        resolve(response);
-      });
+    return browser.runtime.sendMessage(message).then((response: any) => {
+      if (!response?.success) {
+        throw new Error(response?.error || "扩展消息请求失败");
+      }
+      return response;
     });
   }
 

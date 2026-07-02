@@ -45,14 +45,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   await refreshSyncStatus();
 
   // 监听后台登录态变化（如 token 失效被清空），实时刷新页面显示
-  if (chrome?.storage?.onChanged) {
-    browser.storage.onChanged.addListener((changes, areaName) => {
-      if (areaName === "local" && changes.authData) {
-        void refreshAuthStatus();
-        void refreshSyncStatus();
-      }
-    });
-  }
+  browser.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === "local" && changes.authData) {
+      void refreshAuthStatus();
+      void refreshSyncStatus();
+    }
+  });
 });
 
 async function loadSettings(): Promise<void> {
@@ -139,11 +137,7 @@ async function handleAuthRegister(): Promise<void> {
   // 在新标签页打开 word-base 的注册页面（带参数强制显示注册表单）
   const registerUrl = `${WORD_BASE_APP_URL.replace(/\/+$/, "")}/?auth=register`;
   try {
-    if (chrome?.tabs?.create) {
-      await browser.tabs.create({ url: registerUrl });
-    } else {
-      window.open(registerUrl, "_blank");
-    }
+    await browser.tabs.create({ url: registerUrl });
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "打开注册页面失败");
   }

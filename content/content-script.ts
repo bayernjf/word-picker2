@@ -126,7 +126,7 @@
     });
   }
 
-  function handleStorageChange(changes: { [key: string]: chrome.storage.StorageChange }, areaName: string): void {
+  function handleStorageChange(changes: Record<string, { oldValue?: any; newValue?: any }>, areaName: string): void {
     if (areaName !== "local" || !changes.settings?.newValue) {
       return;
     }
